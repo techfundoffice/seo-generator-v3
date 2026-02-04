@@ -7351,11 +7351,15 @@ Return ONLY valid JSON:
   "wordCount": 3500
 }`;
 
-    // 7. Generate with Copilot CLI (2 min timeout, 3 retries)
+    // 7. Generate with Cloudflare AI (FREE - keeps Copilot for discovery/keywords only)
     console.log(`[SEO-V3] [Step 4/7] Building prompt (${prompt.length} chars)...`);
-    console.log(`[SEO-V3] [Step 5/7] Calling Copilot CLI for "${keyword.keyword}"...`);
-    const response = await generateWithCopilotCLI(prompt, 120000, 3);
-    console.log(`[SEO-V3] [Step 5/7] ✓ Copilot response received (${response.length} chars)`);
+    console.log(`[SEO-V3] [Step 5/7] Calling Cloudflare AI for "${keyword.keyword}"...`);
+    const aiResult = await generateWithCloudflareAI(prompt, { timeout: 120000 });
+    if (!aiResult.success || !aiResult.content) {
+      throw new Error(`Cloudflare AI failed: ${aiResult.error || 'No content returned'}`);
+    }
+    const response = aiResult.content;
+    console.log(`[SEO-V3] [Step 5/7] ✓ Cloudflare AI response received (${response.length} chars)`);
 
     // 8. Parse JSON response
     const jsonMatch = response.match(/\{[\s\S]*"title"[\s\S]*\}/);
