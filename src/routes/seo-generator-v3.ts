@@ -1297,7 +1297,8 @@ const CLOUDFLARE_ACCOUNT_ID = 'bc8e15f958dc350e00c0e39d80ca6941';
 const CLOUDFLARE_KV_NAMESPACE_ID = 'bd3b856b2ae147ada9a8d236dd4baf30';
 const CLOUDFLARE_ZONE_ID = '646da2c86dbbe1dff196c155381b0704';
 const CLOUDFLARE_WORKER_NAME = 'petinsurance';
-const CATEGORY_STATUS_PREFIX = 'v3:category:status:';
+// V3 shares category status with V2 to prevent duplicate work on same categories
+const CATEGORY_STATUS_PREFIX = 'v2:category:status:';
 
 // ============================================================================
 // V2 Category Status Tracking (Durable State in KV)
@@ -6533,7 +6534,7 @@ router.post('/start-category', async (req: Request, res: Response) => {
       category: slug, 
       keywords: categoryKeywords.length,
       routeCreated: routeResult.success,
-      message: 'Category routes and status created. To start generation, use the V2 autonomous flow.'
+      message: 'Category routes and status created. To start generation, use the V3 autonomous flow.'
     });
   } catch (error: any) {
     addActivityLog('error', `[V3] Start category error: ${error.message}`);
@@ -7710,7 +7711,7 @@ async function runV2AutonomousGeneration() {
           }
         } else {
           console.log('[SEO-V3] ❌ No categories available to discover');
-          addActivityLog('info', '[V3] All categories exhausted - V2 autonomous stopped');
+          addActivityLog('info', '[V3] All categories exhausted - V3 autonomous stopped');
           v2AutonomousRunning = false;
           return;
         }
@@ -8162,18 +8163,18 @@ router.post('/pagespeed/batch', async (req: Request, res: Response) => {
 // The petinsurance queue is handled by V1 (seo-generator.ts).
 // ═══════════════════════════════════════════════════════════════════════════
 
-console.log('[SEO-V3] Module loaded - scheduling V2 research pipeline auto-start in 15 seconds...');
+console.log('[SEO-V3] Module loaded - scheduling V3 research pipeline auto-start in 15 seconds...');
 
-// Auto-start V2 research pipeline (discovers new categories, NOT petinsurance)
+// Auto-start V3 research pipeline (discovers new categories, NOT petinsurance)
 setTimeout(() => {
-  console.log('[SEO-V3] setTimeout triggered for V2 research pipeline...');
+  console.log('[SEO-V3] setTimeout triggered for V3 research pipeline...');
   if (!v2AutonomousRunning) {
-    console.log('[SEO-V3] 🔬 Auto-starting V2 autonomous research pipeline...');
+    console.log('[SEO-V3] 🔬 Auto-starting V3 autonomous research pipeline...');
     v2AutonomousRunning = true;
     addActivityLog('info', '[V3] Auto-starting autonomous research & generation pipeline (new category discovery)');
     runV2AutonomousGeneration();
   } else {
-    console.log('[SEO-V3] V2 research pipeline already running, skipping auto-start');
+    console.log('[SEO-V3] V3 research pipeline already running, skipping auto-start');
   }
 }, 15000); // Wait 15 seconds to let V1 start first
 
