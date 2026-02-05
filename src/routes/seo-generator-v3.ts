@@ -2167,14 +2167,18 @@ function buildArticleHtml(
           </thead>
           <tbody>
             ${article.comparisonTable.rows.map(row => {
-              if (hasAmazonColumn && row.length >= 5) {
+              // Normalize row to array (AI sometimes returns strings or objects)
+              const rowArray = Array.isArray(row) ? row : (typeof row === 'string' ? [row] : Object.values(row || {}));
+              if (!rowArray.length) return '';
+
+              if (hasAmazonColumn && rowArray.length >= 5) {
                 // Last column contains Amazon search query - convert to affiliate link
-                const amazonSearch = row[row.length - 1] || row[0].replace(/\s+/g, '+');
-                const amazonUrl = `https://www.amazon.com/s?k=${encodeURIComponent(amazonSearch.replace(/\+/g, ' '))}&tag=${amazonTag}`;
-                const displayCells = row.slice(0, -1);
+                const amazonSearch = rowArray[rowArray.length - 1] || String(rowArray[0]).replace(/\s+/g, '+');
+                const amazonUrl = `https://www.amazon.com/s?k=${encodeURIComponent(String(amazonSearch).replace(/\+/g, ' '))}&tag=${amazonTag}`;
+                const displayCells = rowArray.slice(0, -1);
                 return `<tr>${displayCells.map(cell => `<td>${cell}</td>`).join('')}<td><a href="${amazonUrl}" target="_blank" rel="nofollow sponsored" class="amazon-btn">Buy on Amazon</a></td></tr>`;
               }
-              return `<tr>${row.map(cell => `<td>${cell}</td>`).join('')}</tr>`;
+              return `<tr>${rowArray.map(cell => `<td>${cell}</td>`).join('')}</tr>`;
             }).join('')}
           </tbody>
         </table>
@@ -3028,10 +3032,15 @@ function buildArticleHtml(article: ArticleData, slug: string, keyword: string, v
 <tr>${headers.map((h, i) => `<th scope="col"${i === 0 ? ' class="provider-col"' : ''}>${h}</th>`).join('')}</tr>
 </thead>
 <tbody>
-${rows.map((row) => `<tr>
-<th scope="row" class="provider-name">${row[0]}</th>
-${row.slice(1).map((cell) => `<td>${cell}</td>`).join('')}
-</tr>`).join('\n')}
+${rows.map((row) => {
+  // Normalize row to array (AI sometimes returns strings or objects)
+  const rowArray = Array.isArray(row) ? row : (typeof row === 'string' ? [row] : Object.values(row || {}));
+  if (!rowArray.length) return '';
+  return `<tr>
+<th scope="row" class="provider-name">${rowArray[0]}</th>
+${rowArray.slice(1).map((cell) => `<td>${cell}</td>`).join('')}
+</tr>`;
+}).join('\n')}
 </tbody>
 </table>
 <figcaption class="table-source">Data compiled from official provider websites. Prices may vary by location, pet age, and breed. Last updated: ${new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}.</figcaption>
@@ -3312,18 +3321,23 @@ ${provider.cons.map(con => `<li>${con}</li>`).join('\n')}
     "name": `Best Pet Insurance Providers for ${keyword}`,
     "description": `Comparison of top pet insurance providers including pricing, coverage, and reimbursement rates for ${keyword}`,
     "numberOfItems": article.comparisonTable.rows.length,
-    "itemListElement": article.comparisonTable.rows.map((row, index) => ({
-      "@type": "ListItem",
-      "position": index + 1,
-      "name": row[0],
-      "item": {
-        "@type": "Service",
-        "name": `${row[0]} Pet Insurance`,
-        "provider": { "@type": "Organization", "name": row[0] },
-        "serviceType": "Pet Insurance",
-        "areaServed": "US"
-      }
-    }))
+    "itemListElement": article.comparisonTable.rows.map((row, index) => {
+      // Normalize row to array (AI sometimes returns strings or objects)
+      const rowArray = Array.isArray(row) ? row : (typeof row === 'string' ? [row] : Object.values(row || {}));
+      const itemName = rowArray[0] || 'Unknown Provider';
+      return {
+        "@type": "ListItem",
+        "position": index + 1,
+        "name": itemName,
+        "item": {
+          "@type": "Service",
+          "name": `${itemName} Pet Insurance`,
+          "provider": { "@type": "Organization", "name": itemName },
+          "serviceType": "Pet Insurance",
+          "areaServed": "US"
+        }
+      };
+    })
   } : null;
 
   // VideoObject schema for embedded YouTube video
@@ -4995,27 +5009,31 @@ function generateProductSchema(
   const amazonTag = process.env.AMAZON_AFFILIATE_TAG || 'catsluvus03-20';
   
   const products = comparisonRows.map((row, index) => {
-    const productName = row[0] || 'Unknown Product'; // First column is product name
-    const priceStr = row[1] || '$0'; // Second column is price
-    
+    // Normalize row to array (AI sometimes returns strings or objects)
+    const rowArray: string[] = Array.isArray(row) ? row : (typeof row === 'string' ? [row] : Object.values(row || {}));
+    if (!rowArray.length) return null;
+
+    const productName = rowArray[0] || 'Unknown Product'; // First column is product name
+    const priceStr = rowArray[1] || '$0'; // Second column is price
+
     // Extract numeric price (remove $, commas, handle ranges by taking first number)
-    const priceMatch = priceStr.match(/\$?(\d+)/);
+    const priceMatch = String(priceStr).match(/\$?(\d+)/);
     const priceValue = priceMatch ? priceMatch[1] : '0';
-    
+
     // Check if last column contains Amazon search query
-    const lastCol = row[row.length - 1] || '';
-    const isAmazonSearch = lastCol.includes('+') || comparisonHeaders[comparisonHeaders.length - 1]?.toLowerCase().includes('amazon');
-    
+    const lastCol = rowArray[rowArray.length - 1] || '';
+    const isAmazonSearch = String(lastCol).includes('+') || comparisonHeaders[comparisonHeaders.length - 1]?.toLowerCase().includes('amazon');
+
     // Build Amazon affiliate URL
-    const searchQuery = isAmazonSearch 
-      ? lastCol.replace(/\+/g, ' ') 
+    const searchQuery = isAmazonSearch
+      ? String(lastCol).replace(/\+/g, ' ')
       : productName;
     const amazonUrl = `https://www.amazon.com/s?k=${encodeURIComponent(searchQuery)}&tag=${amazonTag}`;
-    
+
     // Build description from middle columns (skip first=name, last=amazon search)
-    const featureColumns = isAmazonSearch ? row.slice(2, -1) : row.slice(2);
+    const featureColumns = isAmazonSearch ? rowArray.slice(2, -1) : rowArray.slice(2);
     const featureHeaders = isAmazonSearch ? comparisonHeaders.slice(2, -1) : comparisonHeaders.slice(2);
-    const features = featureColumns.map((val, i) => 
+    const features = featureColumns.map((val, i) =>
       `${featureHeaders[i] || 'Feature'}: ${val}`
     ).join(', ');
     
@@ -5039,12 +5057,15 @@ function generateProductSchema(
     };
   });
   
+  // Filter out null products (from invalid rows)
+  const validProducts = products.filter(p => p !== null);
+
   return {
     "@context": "https://schema.org",
     "@type": "ItemList",
     "name": `Best ${keyword} Comparison`,
     "description": `Comparison of top ${keyword} products`,
-    "itemListElement": products
+    "itemListElement": validProducts
   };
 }
 
