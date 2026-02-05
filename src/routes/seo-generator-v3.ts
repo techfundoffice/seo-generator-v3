@@ -1897,7 +1897,7 @@ async function fetchExistingArticleSlugs(): Promise<Set<string>> {
 /**
  * Fetch existing article slugs for V3 category (filtered by kvPrefix)
  */
-async function fetchExistingArticleSlugs(kvPrefix: string): Promise<string[]> {
+async function fetchExistingArticleSlugsForCategory(kvPrefix: string): Promise<string[]> {
   const cfApiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
   if (!cfApiToken) return [];
 
@@ -7287,7 +7287,7 @@ Target word count: ${serpAnalysis.targetWordCount}+ words\n`
 
     // 3. Get existing articles for internal linking (BOTH same-category AND cross-category)
     console.log(`[SEO-V3] [Step 3/7] Fetching existing article slugs...`);
-    const existingSlugs = await fetchExistingArticleSlugs(context.kvPrefix);
+    const existingSlugs = await fetchExistingArticleSlugsForCategory(context.kvPrefix);
     console.log(`[SEO-V3] [Step 3/7] ✓ Found ${existingSlugs.length} same-category articles`);
 
     // Fetch cross-category articles (from V3-exclusive categories) with full URLs
