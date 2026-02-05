@@ -193,7 +193,7 @@ async function calculateSEOScore(htmlContent: string, keyword?: string, title?: 
     else if (h2Count >= 3) { bonusPoints += 3; }
     
     // 6. Images with Alt Text Bonus (+4 max)
-    const imagesWithAlt = $('img[alt]').filter((_, el) => $(el).attr('alt')?.trim().length > 0).length;
+    const imagesWithAlt = $('img[alt]').filter((_, el) => ($(el).attr('alt') || '').trim().length > 0).length;
     if (imagesWithAlt >= 3) { bonusPoints += 4; bonusDetails.push(`${imagesWithAlt} images with alt`); }
     else if (imagesWithAlt >= 1) { bonusPoints += 2; }
     
@@ -2009,7 +2009,7 @@ function buildArticleHtml(
   article: ArticleData,
   slug: string,
   keyword: string,
-  context: CategoryContext,
+  context: CategoryContext | null,
   video?: YouTubeVideo,
   generatedImages?: GeneratedImage[],
   amazonProductData?: AmazonProductData
@@ -2019,7 +2019,7 @@ function buildArticleHtml(
   const safeDomain = context?.domain || 'catsluvus.com';
   const safeCategoryName = context?.categoryName || context?.niche || 'Cat Care';
   // Derive basePath from categorySlug, category, or compute from categoryName
-  const derivedSlug = context?.categorySlug || context?.category || 
+  const derivedSlug = context?.categorySlug || context?.niche?.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') ||
     (safeCategoryName !== 'Cat Care' ? safeCategoryName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') : 'cat-care');
   const safeBasePath = context?.basePath || `/${derivedSlug}`;
   const safeSiteName = context?.branding?.siteName || 'CatsLuvUs';
@@ -2533,7 +2533,7 @@ article *{max-width:100%}
 /**
  * Update V3 sitemap with new article
  */
-async function updateSitemap(slug: string, context: CategoryContext): Promise<void> {
+async function updateSitemap(slug: string, context: CategoryContext | null): Promise<void> {
   const cfApiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
   if (!cfApiToken) return;
 
@@ -3509,7 +3509,7 @@ Return ONLY valid JSON (no markdown code blocks):
     console.log(`☁️ [Cloudflare AI] Received response (${content.length} chars) using ${usedModel}`);
 
     // Extract JSON from response - robust extraction with string-aware brace matching
-    let article: ArticleData;
+    let article!: ArticleData; // Definite assignment assertion - will be assigned or we throw
     const jsonStart = content.indexOf('{');
     if (jsonStart === -1) {
       console.log('⚠️ [Cloudflare AI] No JSON found. Response preview:', content.substring(0, 500));
@@ -3934,7 +3934,7 @@ async function loadResearchFromKV(kvPrefix: string): Promise<{ researchOutput: R
 async function fetchCurrentSitemap(categorySlug?: string): Promise<string | null> {
   try {
     // Use category from context or parameter for dynamic sitemap URL
-    const category = categorySlug || v3CategoryContext?.category || 'petinsurance';
+    const category = categorySlug || v3CategoryContext?.categorySlug || 'petinsurance';
     const sitemapUrl = `https://catsluvus.com/${category}/sitemap.xml`;
     const response = await fetch(sitemapUrl, {
       headers: {
@@ -4080,7 +4080,7 @@ async function purgeSitemapCache(cfApiToken: string, categorySlug?: string): Pro
     }
 
     // Use dynamic category for sitemap URL
-    const category = categorySlug || v3CategoryContext?.category || 'petinsurance';
+    const category = categorySlug || v3CategoryContext?.categorySlug || 'petinsurance';
     const response = await fetch(purgeUrl, {
       method: 'POST',
       headers,
@@ -5037,7 +5037,7 @@ router.get('/activity-log', async (req: Request, res: Response) => {
 router.get('/sitemap', async (_req: Request, res: Response) => {
   try {
     // Get category from current context or default
-    const category = v3CategoryContext?.category || 'petinsurance';
+    const category = v3CategoryContext?.categorySlug || 'petinsurance';
     const sitemap = await fetchCurrentSitemap(category);
 
     if (!sitemap) {
@@ -5793,7 +5793,7 @@ router.get('/autonomous/status', async (_req: Request, res: Response) => {
         remaining: pendingKeywords.length,
         totalKeywords: totalKeywords,
         percentComplete: percentComplete,
-        category: v3CategoryContext?.category || null,
+        category: v3CategoryContext?.categorySlug || null,
         niche: v3CategoryContext?.niche || null,
         domain: v3CategoryContext?.domain || 'catsluvus.com',
         basePath: v3CategoryContext?.basePath || null,
@@ -5802,7 +5802,7 @@ router.get('/autonomous/status', async (_req: Request, res: Response) => {
           slug: sortedPending[0].slug,
           priority: sortedPending[0].priority,
           score: sortedPending[0].score,
-          category: v3CategoryContext?.category
+          category: v3CategoryContext?.categorySlug
         } : null,
         exclusiveCategories: V3_EXCLUSIVE_CATEGORIES
       });
@@ -6122,7 +6122,8 @@ router.post('/regenerate-category/:category', async (req: Request, res: Response
  */
 router.post('/regenerate-all', async (_req: Request, res: Response) => {
   try {
-    const allStatuses = await getAllCategoryStatuses();
+    const allStatusKeys = await getAllCategoryStatusKeys();
+    const allStatuses = await Promise.all(allStatusKeys.map(key => getCategoryStatus(key.split(':')[2]).then(s => s || { category: key.split(':')[2], status: 'unknown', articleCount: 0, expectedCount: 0, avgSeoScore: 0, startedAt: '' })));
     const results: any[] = [];
     
     console.log(`[SEO-V3] 🔄 Starting FULL regeneration of ${allStatuses.length} categories`);
@@ -6392,7 +6393,7 @@ async function generateNextArticle() {
           const fixableCount = categorized.fixable.length;
           const infoCount = categorized.informational.length;
           console.log(`[DataForSEO] ${slug}: ${dfsScore.overallScore}/100 (${dfsScore.checks.passed} passed, ${dfsScore.checks.failed} failed) | Fixable: ${fixableCount}, Infrastructure: ${infoCount}`);
-          addActivityLog('seo-score', `[DataForSEO] Professional SEO: ${dfsScore.overallScore}/100`, {
+          addActivityLog('info', `[DataForSEO] Professional SEO: ${dfsScore.overallScore}/100`, {
             keyword,
             slug,
             dataForSEOScore: dfsScore.overallScore,
@@ -6545,7 +6546,7 @@ async function generateNextArticleCloudflare() {
         const fixableCount = categorized.fixable.length;
         const infoCount = categorized.informational.length;
         console.log(`[DataForSEO] ${slug}: ${dfsScore.overallScore}/100 (${dfsScore.checks.passed} passed, ${dfsScore.checks.failed} failed) | Fixable: ${fixableCount}, Infrastructure: ${infoCount}`);
-        addActivityLog('seo-score', `[DataForSEO] Professional SEO: ${dfsScore.overallScore}/100`, {
+        addActivityLog('info', `[DataForSEO] Professional SEO: ${dfsScore.overallScore}/100`, {
           keyword,
           slug,
           dataForSEOScore: dfsScore.overallScore,
@@ -7107,13 +7108,19 @@ Return ONLY valid JSON:
         .replace(/[^a-z0-9]+/g, '-')  // Replace non-alphanumeric with hyphens
         .replace(/(^-|-$)/g, '')  // Trim leading/trailing hyphens
         .replace(/-+/g, '-');     // Collapse multiple hyphens
+      // Wrap addActivityLog to accept string type
+      const logWrapper = (level: string, message: string, data?: any) => {
+        const validTypes = ['info', 'success', 'error', 'generating', 'deployed', 'queue', 'warning'];
+        const type = validTypes.includes(level) ? level as ActivityLogEntry['type'] : 'info';
+        addActivityLog(type, message, data);
+      };
       const imageResult = await generateArticleImages(
         categorySlug,
         slug,
         keyword.keyword,
         article.title,
         article.sections || [],
-        addActivityLog
+        logWrapper
       );
 
       if (imageResult.success) {
@@ -7364,21 +7371,20 @@ async function runV3AutonomousGeneration() {
           
           if (keywords.length >= 5) {
             // Create new v3CategoryContext
-            v3CategoryContext = {
-              category: nextCategory.slug,
-              niche: nextCategory.name,
-              domain: 'catsluvus.com',
-              basePath: `/${nextCategory.slug}`,
-              kvPrefix: `${nextCategory.slug}:`,
-              startedAt: new Date().toISOString(),
-              keywords: keywords.map((kw: string, idx: number) => ({
-                keyword: kw,
-                slug: kw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
-                priority: 'medium',
-                score: 50,
-                status: 'pending'
-              }))
-            } as CategoryContext;
+            v3CategoryContext = createEmptyCategoryContext(nextCategory.slug, 'catsluvus.com', `/${nextCategory.slug}`);
+            v3CategoryContext.niche = nextCategory.name;
+            v3CategoryContext.categoryName = nextCategory.name;
+            v3CategoryContext.keywords = keywords.map((kw: string) => ({
+              keyword: kw,
+              slug: kw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+              priority: 'medium' as any,
+              score: 50,
+              status: 'pending' as const,
+              cpc: 0,
+              volume: 0,
+              difficulty: 0,
+              intent: 'informational' as const
+            }));
             
             // Save in-progress status
             await saveCategoryStatus(nextCategory.slug, {
@@ -7391,11 +7397,11 @@ async function runV3AutonomousGeneration() {
             });
             
             // Save context to KV for persistence
-            await saveResearchToKV({ 
-              researchPhase: 'generation', 
-              selectedNiche: nextCategory.name, 
+            await saveResearchToKV({
+              researchPhase: 'generation',
+              selectedNiche: nextCategory.name,
               keywords: v3CategoryContext.keywords,
-              startedAt: v3CategoryContext.startedAt
+              startedAt: v3CategoryContext.createdAt
             } as any, v3CategoryContext);
             
             addActivityLog('success', `[V3] Started category: ${nextCategory.name} (${keywords.length} keywords)`);
@@ -7429,21 +7435,21 @@ async function runV3AutonomousGeneration() {
   const completionPct = ((completedKeywords / totalKeywords) * 100).toFixed(1);
   
   if (pendingKeywords.length === 0) {
-    const currentNiche = v3CategoryContext.niche || v3CategoryContext.category || 'unknown';
+    const currentNiche = v3CategoryContext.niche || v3CategoryContext.categorySlug || 'unknown';
     console.log(`[SEO-V3] ✅ Niche "${currentNiche}" 100% complete! (${totalKeywords} articles)`);
     addActivityLog('success', `[V3] Niche complete: ${currentNiche} (${totalKeywords} articles)`);
-    
+
     // Mark niche as complete in KV to prevent re-discovery on restart
     await saveResearchToKV({ researchPhase: 'niche_complete', selectedNiche: currentNiche, keywords: v3CategoryContext.keywords, completedAt: new Date().toISOString() } as any, v3CategoryContext);
-    
+
     // Also save to category status system
-    await saveCategoryStatus(v3CategoryContext.category || keywordToSlug(currentNiche), {
-      category: v3CategoryContext.category || keywordToSlug(currentNiche),
+    await saveCategoryStatus(v3CategoryContext.categorySlug || keywordToSlug(currentNiche), {
+      category: v3CategoryContext.categorySlug || keywordToSlug(currentNiche),
       status: 'completed',
       articleCount: totalKeywords,
       expectedCount: totalKeywords,
       avgSeoScore: 85,
-      startedAt: v3CategoryContext.startedAt || new Date().toISOString(),
+      startedAt: v3CategoryContext.createdAt || new Date().toISOString(),
       completedAt: new Date().toISOString()
     });
     
@@ -7465,21 +7471,20 @@ async function runV3AutonomousGeneration() {
           
           if (keywords.length >= 5) {
             // Create new v3CategoryContext
-            v3CategoryContext = {
-              category: nextCategory.slug,
-              niche: nextCategory.name,
-              domain: 'catsluvus.com',
-              basePath: `/${nextCategory.slug}`,
-              kvPrefix: `${nextCategory.slug}:`,
-              startedAt: new Date().toISOString(),
-              keywords: keywords.map((kw: string, idx: number) => ({
-                keyword: kw,
-                slug: kw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
-                priority: 'medium',
-                score: 50,
-                status: 'pending'
-              }))
-            } as CategoryContext;
+            v3CategoryContext = createEmptyCategoryContext(nextCategory.slug, 'catsluvus.com', `/${nextCategory.slug}`);
+            v3CategoryContext.niche = nextCategory.name;
+            v3CategoryContext.categoryName = nextCategory.name;
+            v3CategoryContext.keywords = keywords.map((kw: string) => ({
+              keyword: kw,
+              slug: kw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+              priority: 'medium' as any,
+              score: 50,
+              status: 'pending' as const,
+              cpc: 0,
+              volume: 0,
+              difficulty: 0,
+              intent: 'informational' as const
+            }));
             
             // Save in-progress status
             await saveCategoryStatus(nextCategory.slug, {
