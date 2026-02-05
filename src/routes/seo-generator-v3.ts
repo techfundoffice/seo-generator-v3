@@ -924,28 +924,14 @@ IMPORTANT: Use these EXACT product names and prices in your comparisonTable. Do 
     return { products, comparisonRows, productSchemaItems, promptText };
   }
 
-  // Tier 1: Amazon Creators API
-  try {
-    console.log(`[Amazon] Tier 1: Fetching products for: "${keyword}"`);
-    const result = await searchAmazonProducts(keyword, category, 5);
-
-    if (result.products && result.products.length > 0) {
-      console.log(`[Amazon] Tier 1: Found ${result.products.length} products`);
-      return formatProductData(result.products);
-    }
-    console.log(`[Amazon] Tier 1: No products found for: "${keyword}"`);
-  } catch (error: any) {
-    console.warn(`[Amazon] Tier 1 failed: ${error.message}`);
-  }
-
-  // Tier 2: Apify Amazon Crawler fallback
+  // Tier 1: Apify Amazon Crawler (fast, reliable)
   if (isApifyAvailable()) {
     try {
-      console.log(`[Amazon] Tier 2: Trying Apify fallback for: "${keyword}"`);
+      console.log(`[Amazon] Tier 1: Fetching via Apify for: "${keyword}"`);
       const apifyProducts = await searchProductsViaApify(keyword, 5);
 
       if (apifyProducts.length > 0) {
-        console.log(`[Amazon] Tier 2: Found ${apifyProducts.length} products via Apify`);
+        console.log(`[Amazon] Tier 1: Found ${apifyProducts.length} products via Apify`);
         return formatProductData(apifyProducts.map(p => ({
           title: p.title,
           price: p.price,
@@ -956,12 +942,26 @@ IMPORTANT: Use these EXACT product names and prices in your comparisonTable. Do 
           features: []
         })));
       }
-      console.log(`[Amazon] Tier 2: No products found via Apify`);
+      console.log(`[Amazon] Tier 1: No products found via Apify`);
     } catch (error: any) {
-      console.warn(`[Amazon] Tier 2 (Apify) failed: ${error.message}`);
+      console.warn(`[Amazon] Tier 1 (Apify) failed: ${error.message}`);
     }
   } else {
-    console.log(`[Amazon] Tier 2: Apify not available (no APIFY_TOKEN)`);
+    console.log(`[Amazon] Tier 1: Apify not available (no APIFY_TOKEN), skipping to Tier 2`);
+  }
+
+  // Tier 2: Amazon Creators API fallback
+  try {
+    console.log(`[Amazon] Tier 2: Trying Creators API for: "${keyword}"`);
+    const result = await searchAmazonProducts(keyword, category, 5);
+
+    if (result.products && result.products.length > 0) {
+      console.log(`[Amazon] Tier 2: Found ${result.products.length} products via Creators API`);
+      return formatProductData(result.products);
+    }
+    console.log(`[Amazon] Tier 2: No products found via Creators API`);
+  } catch (error: any) {
+    console.warn(`[Amazon] Tier 2 (Creators API) failed: ${error.message}`);
   }
 
   console.log(`[Amazon] All tiers exhausted for: "${keyword}"`);
