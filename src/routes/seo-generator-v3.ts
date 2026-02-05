@@ -3569,29 +3569,83 @@ Return ONLY valid JSON (no markdown code blocks):
     try {
       article = JSON.parse(sanitizedJson) as ArticleData;
     } catch (parseError: any) {
-      console.log(`⚠️ [OpenRouter] Parse failed at position ${parseError.message.match(/position (\d+)/)?.[1] || 'unknown'}`);
+      const errorPos = parseError.message.match(/position (\d+)/)?.[1];
+      console.log(`⚠️ [Cloudflare AI] Parse failed at position ${errorPos || 'unknown'}`);
+      console.log(`❌ [Cloudflare AI] Error: ${parseError.message}`);
       
-      // Try progressively truncating to find valid JSON
-      let lastValidBrace = sanitizedJson.lastIndexOf('}');
-      while (lastValidBrace > 1000) {
-        const truncated = sanitizedJson.substring(0, lastValidBrace + 1);
-        // Count braces to ensure they're balanced
-        const opens = (truncated.match(/{/g) || []).length;
-        const closes = (truncated.match(/}/g) || []).length;
+      // Enhanced JSON repair: Try multiple strategies
+      let repaired = false;
+      
+      // Strategy 1: Truncate at error position and close properly
+      if (errorPos && parseInt(errorPos) > 500) {
+        const truncPos = parseInt(errorPos);
+        let truncated = sanitizedJson.substring(0, truncPos);
         
-        if (opens === closes) {
+        // Find last complete property (ends with " or number or true/false/null)
+        const lastCompleteMatch = truncated.match(/.*["\d\]}\w](,?\s*)$/s);
+        if (lastCompleteMatch) {
+          truncated = truncated.replace(/,?\s*$/, '');
+          
+          // Count open braces/brackets and close them
+          let openBraces = (truncated.match(/{/g) || []).length - (truncated.match(/}/g) || []).length;
+          let openBrackets = (truncated.match(/\[/g) || []).length - (truncated.match(/]/g) || []).length;
+          
+          // Close arrays first, then objects
+          truncated += ']'.repeat(Math.max(0, openBrackets));
+          truncated += '}'.repeat(Math.max(0, openBraces));
+          
           try {
             article = JSON.parse(truncated) as ArticleData;
-            console.log(`✅ [OpenRouter] Recovered JSON by truncating at position ${lastValidBrace}`);
-            break;
-          } catch (e) {
-            // Try next closing brace
-          }
+            console.log(`✅ [Cloudflare AI] Recovered by truncating at error position + closing`);
+            repaired = true;
+          } catch (e) {}
         }
-        lastValidBrace = sanitizedJson.lastIndexOf('}', lastValidBrace - 1);
       }
       
-      if (!article!) {
+      // Strategy 2: Progressive truncation from end
+      if (!repaired) {
+        let lastValidBrace = sanitizedJson.lastIndexOf('}');
+        while (lastValidBrace > 1000 && !repaired) {
+          const truncated = sanitizedJson.substring(0, lastValidBrace + 1);
+          const opens = (truncated.match(/{/g) || []).length;
+          const closes = (truncated.match(/}/g) || []).length;
+          
+          if (opens === closes) {
+            try {
+              article = JSON.parse(truncated) as ArticleData;
+              console.log(`✅ [Cloudflare AI] Recovered JSON by truncating at position ${lastValidBrace}`);
+              repaired = true;
+              break;
+            } catch (e) {}
+          }
+          lastValidBrace = sanitizedJson.lastIndexOf('}', lastValidBrace - 1);
+        }
+      }
+      
+      // Strategy 3: Find and remove incomplete trailing properties
+      if (!repaired) {
+        // Remove trailing incomplete property like ,"key": "value... or ,"key": [incomplete
+        let cleaned = sanitizedJson
+          .replace(/,\s*"[^"]*":\s*"[^"]*$/s, '')  // Remove incomplete string value
+          .replace(/,\s*"[^"]*":\s*\[[^\]]*$/s, '') // Remove incomplete array
+          .replace(/,\s*"[^"]*":\s*{[^}]*$/s, '')   // Remove incomplete object
+          .replace(/,\s*"[^"]*":\s*$/s, '');        // Remove property with no value
+        
+        // Close remaining open braces
+        let openBraces = (cleaned.match(/{/g) || []).length - (cleaned.match(/}/g) || []).length;
+        let openBrackets = (cleaned.match(/\[/g) || []).length - (cleaned.match(/]/g) || []).length;
+        cleaned += ']'.repeat(Math.max(0, openBrackets));
+        cleaned += '}'.repeat(Math.max(0, openBraces));
+        
+        try {
+          article = JSON.parse(cleaned) as ArticleData;
+          console.log(`✅ [Cloudflare AI] Recovered by removing incomplete properties`);
+          repaired = true;
+        } catch (e) {}
+      }
+      
+      if (!repaired) {
+        console.log(`❌ [OpenRouter] Error: ${parseError.message}`);
         throw parseError;
       }
     }
@@ -5815,6 +5869,78 @@ router.post('/create-route', async (req: Request, res: Response) => {
 });
 
 /**
+ * List all current Cloudflare Worker routes for debugging
+ */
+router.get('/list-routes', async (_req: Request, res: Response) => {
+  try {
+    const cfApiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken) {
+      return res.status(400).json({ error: 'No Cloudflare API token configured' });
+    }
+
+    const routes = await fetchWorkerRoutes(cfApiToken);
+
+    // Filter routes for catsluvus.com
+    const catsluvusRoutes = routes.filter((r: any) =>
+      r.pattern?.includes('catsluvus.com')
+    );
+
+    // Check which V3 categories have routes
+    const v3CategoryRoutes = V3_EXCLUSIVE_CATEGORIES.map(cat => {
+      const hasRoute = catsluvusRoutes.some((r: any) =>
+        r.pattern?.includes(`/${cat}/`) || r.pattern?.includes(`/${cat}`)
+      );
+      return { category: cat, hasRoute, pattern: hasRoute ? `catsluvus.com/${cat}/*` : null };
+    });
+
+    res.json({
+      totalRoutes: routes.length,
+      catsluvusRoutes: catsluvusRoutes.length,
+      routes: catsluvusRoutes.map((r: any) => ({
+        id: r.id,
+        pattern: r.pattern,
+        script: r.script
+      })),
+      v3Categories: v3CategoryRoutes,
+      missingV3Routes: v3CategoryRoutes.filter(c => !c.hasRoute).map(c => c.category)
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Create routes for ALL V3 exclusive categories at once
+ */
+router.post('/create-all-v3-routes', async (_req: Request, res: Response) => {
+  try {
+    const results: any[] = [];
+
+    for (const category of V3_EXCLUSIVE_CATEGORIES) {
+      const result = await ensureWorkerRouteForCategory(category);
+      results.push({
+        category,
+        success: result.success,
+        routeId: result.routeId,
+        error: result.error
+      });
+    }
+
+    const successful = results.filter(r => r.success).length;
+    const failed = results.filter(r => !r.success).length;
+
+    res.json({
+      message: `Created routes for ${successful}/${V3_EXCLUSIVE_CATEGORIES.length} V3 categories`,
+      successful,
+      failed,
+      results
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * Manually trigger category discovery (for testing)
  */
 router.post('/discover-category', async (_req: Request, res: Response) => {
@@ -7694,5 +7820,115 @@ setTimeout(() => {
     console.log('[SEO-V3] V3 research pipeline already running, skipping auto-start');
   }
 }, 15000); // Wait 15 seconds to let V1 start first
+
+// ============================================================================
+// AUTONOMOUS ROUTE HEALING - Fixes missing Cloudflare Worker routes
+// Runs every 10 minutes to ensure all categories have proper routing
+// ============================================================================
+
+const KNOWN_CATEGORIES = [
+  'petinsurance',
+  'automatic-cat-feeders',
+  'cat-automatic-litter-box-cleaners',
+  'cat-calming-anxiety-products',
+  'cat-carriers-travel-products',
+  'cat-dna-testing',
+  'cat-enclosures-outdoor-catios',
+  'cat-flea-tick-treatments',
+  'cat-food-delivery-services',
+  'cat-food-nutrition',
+  'cat-gps-trackers',
+  'cat-grooming-tools-kits',
+  'cat-health-supplements',
+  'cat-scratchers-scratching-posts',
+  'cat-toys-interactive',
+  'cat-trees-furniture',
+  'cat-dental-care'
+];
+
+async function healMissingRoutes(): Promise<{ checked: number; created: number; errors: string[] }> {
+  const cfApiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+  if (!cfApiToken) {
+    console.log('[Route Healer] No Cloudflare API token - skipping');
+    return { checked: 0, created: 0, errors: ['No API token'] };
+  }
+
+  console.log('[Route Healer] 🔧 Starting autonomous route healing check...');
+  let checked = 0;
+  let created = 0;
+  const errors: string[] = [];
+
+  // Fetch existing routes once
+  let existingRoutes: any[] = [];
+  try {
+    existingRoutes = await fetchWorkerRoutes(cfApiToken);
+    console.log(`[Route Healer] Found ${existingRoutes.length} existing routes`);
+  } catch (err: any) {
+    console.log(`[Route Healer] Failed to fetch routes: ${err.message}`);
+    return { checked: 0, created: 0, errors: [err.message] };
+  }
+
+  // Check each known category
+  for (const category of KNOWN_CATEGORIES) {
+    checked++;
+    const routePattern = `catsluvus.com/${category}/*`;
+    const hasRoute = existingRoutes.some((r: any) => r.pattern === routePattern);
+
+    if (!hasRoute) {
+      console.log(`[Route Healer] ⚠️ Missing route for: ${category}`);
+      try {
+        const result = await ensureWorkerRouteForCategory(category);
+        if (result.success) {
+          created++;
+          console.log(`[Route Healer] ✅ Created route for: ${category}`);
+          addActivityLog('success', `[Route Healer] Auto-created Worker route for ${category}`, { routeId: result.routeId });
+        } else {
+          errors.push(`${category}: ${result.error}`);
+        }
+      } catch (err: any) {
+        errors.push(`${category}: ${err.message}`);
+      }
+    }
+  }
+
+  console.log(`[Route Healer] ✅ Check complete: ${checked} checked, ${created} created, ${errors.length} errors`);
+  return { checked, created, errors };
+}
+
+// Run route healer every 10 minutes
+setInterval(async () => {
+  try {
+    await healMissingRoutes();
+  } catch (err: any) {
+    console.log(`[Route Healer] Error: ${err.message}`);
+  }
+}, 10 * 60 * 1000); // 10 minutes
+
+// Also run immediately on startup (after 30 seconds)
+setTimeout(async () => {
+  console.log('[Route Healer] Initial route healing check...');
+  try {
+    const result = await healMissingRoutes();
+    if (result.created > 0) {
+      console.log(`[Route Healer] 🔧 Fixed ${result.created} missing routes on startup`);
+    }
+  } catch (err: any) {
+    console.log(`[Route Healer] Startup check error: ${err.message}`);
+  }
+}, 30000);
+
+// Manual endpoint to trigger route healing
+router.post('/heal-routes', async (req: Request, res: Response) => {
+  try {
+    const result = await healMissingRoutes();
+    res.json({
+      success: true,
+      ...result,
+      message: result.created > 0 ? `Created ${result.created} missing routes` : 'All routes already configured'
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 export default router;
