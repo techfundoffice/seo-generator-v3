@@ -522,7 +522,7 @@ export async function generateArticleImages(
 
   // Check rate limit
   if (!canGenerateImage()) {
-    log('warning', `[V2] Image generation quota exceeded (${dailyImageCount}/${DAILY_IMAGE_LIMIT})`, {});
+    log('warning', `[V3] Image generation quota exceeded (${dailyImageCount}/${DAILY_IMAGE_LIMIT})`, {});
     result.errors.push('Daily image quota exceeded');
     return result;
   }
@@ -535,7 +535,7 @@ export async function generateArticleImages(
   const maxImages = 2;
   const imagesToGenerate = imageContexts.slice(0, maxImages);
 
-  log('info', `[V2] Generating ${imagesToGenerate.length} AI images for "${keyword}"...`, {
+  log('info', `[V3] Generating ${imagesToGenerate.length} AI images for "${keyword}"...`, {
     category,
     slug,
     imageCount: imagesToGenerate.length
@@ -545,7 +545,7 @@ export async function generateArticleImages(
   for (const context of imagesToGenerate) {
     // Check quota before each image
     if (!canGenerateImage()) {
-      log('warning', '[V2] Image quota reached mid-generation', {});
+      log('warning', '[V3] Image quota reached mid-generation', {});
       break;
     }
 
@@ -562,7 +562,7 @@ export async function generateArticleImages(
       
       // Check quota before each attempt
       if (!canGenerateImage()) {
-        log('warning', '[V2] Image quota reached during retry', {});
+        log('warning', '[V3] Image quota reached during retry', {});
         break;
       }
 
@@ -570,18 +570,18 @@ export async function generateArticleImages(
       prompt = generateImagePrompt(category, context, keyword);
       
       if (attempt === 1) {
-        log('info', `[V2] Generating ${context.imageType} image for "${keyword}"...`, {
+        log('info', `[V3] Generating ${context.imageType} image for "${keyword}"...`, {
           prompt: prompt.substring(0, 120) + '...'
         });
       } else {
-        log('info', `[V2] Retry ${attempt}/${MAX_IMAGE_RETRIES} for "${keyword}"...`, {});
+        log('info', `[V3] Retry ${attempt}/${MAX_IMAGE_RETRIES} for "${keyword}"...`, {});
       }
 
       // Generate image
       imageBuffer = await generateSingleImage(prompt, 1024, 768);
 
       if (!imageBuffer) {
-        log('warning', `[V2] Generation failed on attempt ${attempt}`, {});
+        log('warning', `[V3] Generation failed on attempt ${attempt}`, {});
         continue;
       }
 
@@ -598,16 +598,16 @@ export async function generateArticleImages(
       
       if (verification.relevant) {
         verificationPassed = true;
-        log('success', `[V2] Image verified for "${keyword}": ${verification.reason}`, {});
+        log('success', `[V3] Image verified for "${keyword}": ${verification.reason}`, {});
       } else {
-        log('warning', `[V2] Image rejected: ${verification.reason}`, { attempt });
+        log('warning', `[V3] Image rejected: ${verification.reason}`, { attempt });
         imageBuffer = null; // Clear so we retry
       }
     }
 
     // If all retries failed, accept the last image anyway
     if (!verificationPassed && lastBase64) {
-      log('warning', `[V2] Max retries reached, using last generated image`, {});
+      log('warning', `[V3] Max retries reached, using last generated image`, {});
       // Reconstruct buffer from base64
       const binaryString = atob(lastBase64);
       const bytes = new Uint8Array(binaryString.length);
@@ -658,7 +658,7 @@ export async function generateArticleImages(
       // FLUX.1 schnell: ~57.6 neurons per 1024x768 image × attempts
       result.neuronsCost += 58 * attempt;
 
-      log('success', `[V2] ${context.imageType} image stored: ${r2Key} (${attempt} attempt${attempt > 1 ? 's' : ''})`, {
+      log('success', `[V3] ${context.imageType} image stored: ${r2Key} (${attempt} attempt${attempt > 1 ? 's' : ''})`, {
         r2Key,
         neuronsCost: 58 * attempt,
         attempts: attempt
@@ -680,7 +680,7 @@ export async function generateArticleImages(
 
   log(
     result.success ? 'success' : 'warning',
-    `[V2] Image generation complete: ${result.images.length}/${imagesToGenerate.length} images`,
+    `[V3] Image generation complete: ${result.images.length}/${imagesToGenerate.length} images`,
     {
       totalMs: result.timing.totalMs,
       neuronsCost: result.neuronsCost,
