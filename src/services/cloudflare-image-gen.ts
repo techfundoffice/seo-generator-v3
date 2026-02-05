@@ -339,7 +339,7 @@ async function generateSingleImage(
   height: number = 768
 ): Promise<ArrayBuffer | null> {
   // Use Workers AI specific token, fall back to general token
-  const apiToken = secrets.cloudflareWorkersAiToken || secrets.cloudflareApiToken || process.env.CLOUDFLARE_WORKERS_AI_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
+  const apiToken = secrets.get('CLOUDFLARE_WORKERS_AI_TOKEN') || secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_WORKERS_AI_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
 
   if (!apiToken) {
     console.error('[Image Gen] No Cloudflare Workers AI token configured. Add CLOUDFLARE_WORKERS_AI_TOKEN to Doppler.');
