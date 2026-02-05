@@ -7354,9 +7354,10 @@ Return ONLY valid JSON:
     // 7. Generate with Cloudflare AI (FREE - keeps Copilot for discovery/keywords only)
     console.log(`[SEO-V3] [Step 4/7] Building prompt (${prompt.length} chars)...`);
     console.log(`[SEO-V3] [Step 5/7] Calling Cloudflare AI for "${keyword.keyword}"...`);
-    const aiResult = await generateWithCloudflareAI(prompt, { timeout: 120000 });
-    if (!aiResult.success || !aiResult.content) {
-      throw new Error(`Cloudflare AI failed: ${aiResult.error || 'No content returned'}`);
+    // FIX: Increased timeout from 2min to 5min, fixed response type check
+    const aiResult = await generateWithCloudflareAI(prompt, { timeout: 300000 });
+    if (!aiResult || !aiResult.content) {
+      throw new Error(`Cloudflare AI failed: No content returned`);
     }
     const response = aiResult.content;
     console.log(`[SEO-V3] [Step 5/7] ✓ Cloudflare AI response received (${response.length} chars)`);
