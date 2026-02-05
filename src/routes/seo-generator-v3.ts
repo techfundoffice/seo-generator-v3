@@ -2981,862 +2981,6 @@ interface ArticleData {
   providerProsCons?: Array<{ provider: string; pros: string[]; cons: string[] }>;
 }
 
-/**
- * Build full HTML page from article data - Universal Template with GTM, AdSense, Hamburger Menu
- * Matches petinsurance main page best practices
- * Now supports dynamic category context for V3 categories
- */
-function buildArticleHtml(article: ArticleData, slug: string, keyword: string, video?: YouTubeVideo, categoryContext?: CategoryContext | null): string {
-  const year = new Date().getFullYear();
-  const dateStr = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-  
-  // Dynamic category values with fallbacks for V1 petinsurance compatibility
-  const categoryName = categoryContext?.categoryName || 'Pet Insurance';
-  const categoryBasePath = categoryContext?.basePath || '/petinsurance';
-  const categoryDomain = categoryContext?.domain || 'catsluvus.com';
-  const pageUrl = `https://${categoryDomain}${categoryBasePath}/${slug}`;
-
-  // Extract category slug for internal linking (remove leading slash)
-  const categoryForLinking = categoryBasePath.replace(/^\//, '') || 'petinsurance';
-
-  // Get EEAT author for this topic
-  const author = getAuthorForTopic(article.title);
-
-  // Build sections HTML with internal linking
-  const sectionsHtml = article.sections?.map((section, i) => {
-    const linkedContent = autoLink(section.content, slug, categoryForLinking);
-    let html = `<h2 id="section-${i}">${section.heading}</h2>\n<p>${linkedContent}</p>\n`;
-    if (section.subsections) {
-      section.subsections.forEach(sub => {
-        const linkedSubContent = autoLink(sub.content, slug, categoryForLinking);
-        html += `<h3>${sub.heading}</h3>\n<p>${linkedSubContent}</p>\n`;
-      });
-    }
-    return html;
-  }).join('\n') || '';
-
-  // Apply internal linking to introduction and conclusion
-  const linkedIntro = autoLink(article.introduction, slug, categoryForLinking);
-  const linkedConclusion = autoLink(article.conclusion, slug, categoryForLinking);
-
-  // Build comparison table with semantic markup for Featured Snippets
-  // Google prefers clean HTML tables with scope attributes for Featured Snippets
-  let tableHtml = '';
-  if (article.comparisonTable) {
-    const headers = article.comparisonTable.headers;
-    const rows = article.comparisonTable.rows;
-    tableHtml = `<figure class="comparison-table-wrapper" role="group" aria-labelledby="comparison-caption-${slug.slice(0, 8)}">
-<table class="comparison-table">
-<caption id="comparison-caption-${slug.slice(0, 8)}">Pet Insurance Provider Comparison for ${keyword} - ${new Date().getFullYear()}</caption>
-<thead>
-<tr>${headers.map((h, i) => `<th scope="col"${i === 0 ? ' class="provider-col"' : ''}>${h}</th>`).join('')}</tr>
-</thead>
-<tbody>
-${rows.map((row) => {
-  // Normalize row to array (AI sometimes returns strings or objects)
-  const rowArray = Array.isArray(row) ? row : (typeof row === 'string' ? [row] : Object.values(row || {}));
-  if (!rowArray.length) return '';
-  return `<tr>
-<th scope="row" class="provider-name">${rowArray[0]}</th>
-${rowArray.slice(1).map((cell) => `<td>${cell}</td>`).join('')}
-</tr>`;
-}).join('\n')}
-</tbody>
-</table>
-<figcaption class="table-source">Data compiled from official provider websites. Prices may vary by location, pet age, and breed. Last updated: ${new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}.</figcaption>
-</figure>`;
-  }
-
-  // Build FAQ HTML
-  const faqsHtml = article.faqs?.map(faq =>
-    `<div class="faq-item"><h3>${faq.question}</h3><p>${faq.answer}</p></div>`
-  ).join('\n') || '';
-
-  // Build external authority links section
-  const externalLinksHtml = article.externalLinks && article.externalLinks.length > 0 ? `
-<div class="sources-section" id="sources">
-<h2>Sources & References</h2>
-<ul class="sources-list">
-${article.externalLinks.map(link => 
-  `<li><a href="${link.url}" target="_blank" rel="noopener">${link.text}</a> - ${link.context}</li>`
-).join('\n')}
-</ul>
-</div>` : '';
-
-  // Build internal links (Related Articles) section
-  const internalLinksHtml = article.internalLinks && article.internalLinks.length > 0 ? `
-<div class="related-articles" id="related">
-<h2>Related Articles</h2>
-<ul class="related-list">
-${article.internalLinks.map(link => {
-  // Support both new URL format and legacy slug format
-  const href = link.url || `${categoryBasePath}/${link.slug}`;
-  return `<li><a href="${href}">${link.anchorText}</a> - ${link.context}</li>`;
-}).join('\n')}
-</ul>
-</div>` : '';
-
-  // Build Pros & Cons section for Google rich results
-  const prosConsHtml = article.providerProsCons && article.providerProsCons.length > 0 ? `
-<section class="pros-cons-section" id="pros-cons">
-<h2>Provider Pros & Cons</h2>
-<p class="pros-cons-intro">Our expert analysis of each pet insurance provider to help you make an informed decision:</p>
-<div class="pros-cons-grid">
-${article.providerProsCons.map(provider => `
-<div class="pros-cons-card">
-<h3>${provider.provider}</h3>
-<div class="pros">
-<h4><span class="icon-pros">✓</span> Pros</h4>
-<ul>
-${provider.pros.map(pro => `<li>${pro}</li>`).join('\n')}
-</ul>
-</div>
-<div class="cons">
-<h4><span class="icon-cons">✗</span> Cons</h4>
-<ul>
-${provider.cons.map(con => `<li>${con}</li>`).join('\n')}
-</ul>
-</div>
-</div>`).join('\n')}
-</div>
-</section>` : '';
-
-  // Build TOC
-  const tocHtml = article.sections?.map((s, i) =>
-    `<li><a href="#section-${i}">${s.heading}</a></li>`
-  ).join('\n') || '';
-
-  // Enhanced Schema.org structured data following Google Search Console best practices
-  // pageUrl is defined at the top of the function using dynamic category context
-  // Use full ISO 8601 format with timezone for Google Rich Results compliance
-  const publishDate = new Date().toISOString(); // e.g., "2026-01-29T19:00:00.000Z"
-  const wordCount = article.wordCount || 3500;
-
-  // WebSite schema for sitelinks search box
-  const websiteSchema = {
-    "@context": "https://schema.org",
-    "@type": "WebSite",
-    "@id": "https://catsluvus.com/#website",
-    "url": "https://catsluvus.com",
-    "name": "Cats Luv Us",
-    "description": "Expert pet insurance comparisons, reviews, and guides",
-    "publisher": { "@id": "https://catsluvus.com/#organization" },
-    "potentialAction": {
-      "@type": "SearchAction",
-      "target": {
-        "@type": "EntryPoint",
-        "urlTemplate": "https://catsluvus.com/petinsurance/?s={search_term_string}"
-      },
-      "query-input": "required name=search_term_string"
-    }
-  };
-
-  // Organization schema with enhanced details
-  const organizationSchema = {
-    "@context": "https://schema.org",
-    "@type": "Organization",
-    "@id": "https://catsluvus.com/#organization",
-    "name": "Cats Luv Us",
-    "url": "https://www.catsluvus.com",
-    "logo": {
-      "@type": "ImageObject",
-      "@id": "https://catsluvus.com/#logo",
-      "url": "https://www.catsluvus.com/wp-content/uploads/2024/05/Group-3.png",
-      "contentUrl": "https://www.catsluvus.com/wp-content/uploads/2024/05/Group-3.png",
-      "width": 512,
-      "height": 512,
-      "caption": "Cats Luv Us Logo"
-    },
-    "sameAs": [
-      "https://www.facebook.com/catsluvusboardinghotel",
-      "https://www.instagram.com/catsluvusboardinghotel"
-    ],
-    "contactPoint": {
-      "@type": "ContactPoint",
-      "telephone": "+1-972-438-2868",
-      "contactType": "customer service",
-      "areaServed": "US",
-      "availableLanguage": "English"
-    }
-  };
-
-  // Article schema with all recommended properties for Google
-  const articleSchema = {
-    "@context": "https://schema.org",
-    "@type": "Article",
-    "@id": `${pageUrl}#article`,
-    "isPartOf": { "@id": `${pageUrl}#webpage` },
-    "headline": article.title,
-    "description": article.metaDescription,
-    "datePublished": publishDate,
-    "dateModified": publishDate,
-    "wordCount": wordCount,
-    "inLanguage": "en-US",
-    "mainEntityOfPage": { "@id": `${pageUrl}#webpage` },
-    "author": {
-      "@type": "Person",
-      "@id": `https://catsluvus.com/author/${author.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}#author`,
-      "name": author.name,
-      "description": author.bio,
-      "jobTitle": author.credentials,
-      "url": `https://catsluvus.com/about#${author.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
-      "worksFor": { "@id": "https://catsluvus.com/#organization" }
-    },
-    "publisher": { "@id": "https://catsluvus.com/#organization" },
-    "image": [
-      {
-        "@type": "ImageObject",
-        "@id": `${pageUrl}#primaryimage`,
-        "url": article.images?.[0]?.url || "https://www.catsluvus.com/wp-content/uploads/2024/05/Group-3.png",
-        "contentUrl": article.images?.[0]?.url || "https://www.catsluvus.com/wp-content/uploads/2024/05/Group-3.png",
-        "width": 1200,
-        "height": 675,
-        "caption": article.images?.[0]?.caption || article.title
-      },
-      {
-        "@type": "ImageObject",
-        "url": article.images?.[1]?.url || "https://www.catsluvus.com/wp-content/uploads/2024/05/Group-3.png",
-        "width": 1200,
-        "height": 900
-      },
-      {
-        "@type": "ImageObject",
-        "url": article.images?.[2]?.url || "https://www.catsluvus.com/wp-content/uploads/2024/05/Group-3.png",
-        "width": 1200,
-        "height": 1200
-      }
-    ],
-    "thumbnailUrl": article.images?.[0]?.url || "https://www.catsluvus.com/wp-content/uploads/2024/05/Group-3.png",
-    "keywords": [keyword, "pet insurance", "pet coverage", "insurance comparison"].join(", "),
-    "articleSection": keyword.includes('dog') ? "Dog Insurance" : keyword.includes('cat') ? "Cat Insurance" : "Pet Insurance",
-    "speakable": {
-      "@type": "SpeakableSpecification",
-      "cssSelector": [".article-intro", "h1", ".key-takeaways"]
-    },
-    "about": {
-      "@type": "Thing",
-      "name": "Pet Insurance",
-      "description": "Insurance policies that cover veterinary costs for pets"
-    },
-    ...(article.providerProsCons && article.providerProsCons.length > 0 ? {
-      "positiveNotes": {
-        "@type": "ItemList",
-        "itemListElement": article.providerProsCons.flatMap(p => p.pros).slice(0, 5).map((pro, i) => ({
-          "@type": "ListItem",
-          "position": i + 1,
-          "name": pro
-        }))
-      },
-      "negativeNotes": {
-        "@type": "ItemList",
-        "itemListElement": article.providerProsCons.flatMap(p => p.cons).slice(0, 5).map((con, i) => ({
-          "@type": "ListItem",
-          "position": i + 1,
-          "name": con
-        }))
-      }
-    } : {})
-  };
-
-  // WebPage schema linking everything together
-  const webPageSchema = {
-    "@context": "https://schema.org",
-    "@type": "WebPage",
-    "@id": `${pageUrl}#webpage`,
-    "url": pageUrl,
-    "name": article.title,
-    "description": article.metaDescription,
-    "isPartOf": { "@id": "https://catsluvus.com/#website" },
-    "primaryImageOfPage": { "@id": `${pageUrl}#primaryimage` },
-    "datePublished": publishDate,
-    "dateModified": publishDate,
-    "breadcrumb": { "@id": `${pageUrl}#breadcrumb` },
-    "inLanguage": "en-US",
-    "potentialAction": [{
-      "@type": "ReadAction",
-      "target": [pageUrl]
-    }]
-  };
-
-  // FAQ schema with proper linking
-  const faqSchema = {
-    "@context": "https://schema.org",
-    "@type": "FAQPage",
-    "@id": `${pageUrl}#faq`,
-    "isPartOf": { "@id": `${pageUrl}#webpage` },
-    "mainEntity": article.faqs?.map((faq, index) => ({
-      "@type": "Question",
-      "@id": `${pageUrl}#faq-${index + 1}`,
-      "name": faq.question,
-      "acceptedAnswer": {
-        "@type": "Answer",
-        "text": faq.answer
-      }
-    })) || []
-  };
-
-  // BreadcrumbList schema with proper @id - uses dynamic category context
-  const breadcrumbSchema = {
-    "@context": "https://schema.org",
-    "@type": "BreadcrumbList",
-    "@id": `${pageUrl}#breadcrumb`,
-    "itemListElement": [
-      { "@type": "ListItem", "position": 1, "name": "Home", "item": `https://${categoryDomain}` },
-      { "@type": "ListItem", "position": 2, "name": categoryName, "item": `https://${categoryDomain}${categoryBasePath}` },
-      { "@type": "ListItem", "position": 3, "name": article.title, "item": pageUrl }
-    ]
-  };
-
-  // AEO/GEO: DefinedTerm schema for AI citation and featured snippets
-  const definitionSchema = article.definitionSnippet ? {
-    "@context": "https://schema.org",
-    "@type": "DefinedTerm",
-    "@id": `${pageUrl}#definition`,
-    "name": keyword,
-    "description": article.definitionSnippet,
-    "inDefinedTermSet": {
-      "@type": "DefinedTermSet",
-      "name": `${categoryName} Glossary`
-    }
-  } : null;
-
-  // GEO: Speakable schema for voice search and AI assistants
-  const speakableSchema = {
-    "@context": "https://schema.org",
-    "@type": "WebPage",
-    "@id": `${pageUrl}#speakable`,
-    "speakable": {
-      "@type": "SpeakableSpecification",
-      "cssSelector": [".quick-answer", ".key-takeaways", ".definition-box", ".key-facts"]
-    }
-  };
-
-  // Combined graph for better entity relationships
-  // ItemList schema for comparison table (helps with Featured Snippets for "best X" queries)
-  // Uses Service type instead of Product with fake pricing for better schema accuracy
-  const comparisonListSchema = article.comparisonTable && article.comparisonTable.rows.length > 0 ? {
-    "@context": "https://schema.org",
-    "@type": "ItemList",
-    "@id": `${pageUrl}#comparison-list`,
-    "name": `Best Pet Insurance Providers for ${keyword}`,
-    "description": `Comparison of top pet insurance providers including pricing, coverage, and reimbursement rates for ${keyword}`,
-    "numberOfItems": article.comparisonTable.rows.length,
-    "itemListElement": article.comparisonTable.rows.map((row, index) => {
-      // Normalize row to array (AI sometimes returns strings or objects)
-      const rowArray = Array.isArray(row) ? row : (typeof row === 'string' ? [row] : Object.values(row || {}));
-      const itemName = rowArray[0] || 'Unknown Provider';
-      return {
-        "@type": "ListItem",
-        "position": index + 1,
-        "name": itemName,
-        "item": {
-          "@type": "Service",
-          "name": `${itemName} Pet Insurance`,
-          "provider": { "@type": "Organization", "name": itemName },
-          "serviceType": "Pet Insurance",
-          "areaServed": "US"
-        }
-      };
-    })
-  } : null;
-
-  // VideoObject schema for embedded YouTube video
-  const videoSchema = video ? {
-    "@context": "https://schema.org",
-    "@type": "VideoObject",
-    "@id": `${pageUrl}#video`,
-    "name": video.title,
-    "description": video.description,
-    "thumbnailUrl": [
-      video.thumbnailUrl,
-      `https://img.youtube.com/vi/${video.videoId}/hqdefault.jpg`,
-      `https://img.youtube.com/vi/${video.videoId}/mqdefault.jpg`
-    ],
-    "uploadDate": video.publishedISO || new Date().toISOString().split('T')[0],
-    "duration": video.durationISO,
-    "contentUrl": video.watchUrl,
-    "embedUrl": video.embedUrl,
-    "publisher": {
-      "@type": "Organization",
-      "name": video.channel,
-      "url": "https://www.youtube.com"
-    },
-    "inLanguage": "en-US",
-    "interactionStatistic": {
-      "@type": "InteractionCounter",
-      "interactionType": { "@type": "WatchAction" },
-      "userInteractionCount": video.viewCount || 0
-    }
-  } : null;
-
-  const schemaGraph = {
-    "@context": "https://schema.org",
-    "@graph": [
-      websiteSchema,
-      organizationSchema,
-      webPageSchema,
-      articleSchema,
-      breadcrumbSchema,
-      speakableSchema,
-      ...(article.faqs && article.faqs.length > 0 ? [faqSchema] : []),
-      ...(definitionSchema ? [definitionSchema] : []),
-      ...(comparisonListSchema ? [comparisonListSchema] : []),
-      ...(videoSchema ? [videoSchema] : [])
-    ]
-  };
-
-  // NOTE: Navigation menu items now handled by Worker HTMLRewriter injection
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<!-- Google AdSense -->
-<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-9364522191686432" crossorigin="anonymous"></script>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${article.title}</title>
-<meta name="description" content="${article.metaDescription}">
-<meta name="keywords" content="${keyword}, pet insurance, ${keyword.includes('dog') ? 'dog insurance' : keyword.includes('cat') ? 'cat insurance' : 'pet coverage'}">
-<link rel="canonical" href="${pageUrl}">
-
-<!-- Open Graph -->
-<meta property="og:type" content="article">
-<meta property="og:url" content="${pageUrl}">
-<meta property="og:title" content="${article.title}">
-<meta property="og:description" content="${article.metaDescription}">
-<meta property="og:image" content="${article.images?.[0]?.url || 'https://www.catsluvus.com/wp-content/uploads/2024/05/Group-3.png'}">
-<meta property="og:image:alt" content="${article.images?.[0]?.alt || article.title}">
-
-<!-- Twitter Card -->
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:url" content="${pageUrl}">
-<meta name="twitter:title" content="${article.title}">
-<meta name="twitter:description" content="${article.metaDescription}">
-<meta name="twitter:image" content="${article.images?.[0]?.url || 'https://www.catsluvus.com/wp-content/uploads/2024/05/Group-3.png'}">
-<meta name="twitter:image:alt" content="${article.images?.[0]?.alt || article.title}">
-
-<!-- Structured Data (Google Search Console optimized @graph format) -->
-<script type="application/ld+json">${JSON.stringify(schemaGraph)}</script>
-
-<!-- Google Tag Manager -->
-<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
-new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
-j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
-'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
-})(window,document,'script','dataLayer','GTM-KPSXGQWC');</script>
-
-<style>
-/* CSS Custom Properties */
-:root {
-  --wc-color-primary: #326891;
-  --wc-color-primary-dark: #265073;
-  --wc-color-text: #121212;
-  --wc-color-text-secondary: #555555;
-  --wc-color-border: #e2e2e2;
-  --wc-color-bg: #ffffff;
-  --wc-color-bg-hover: #f8f8f8;
-  --wc-transition-speed: 300ms;
-}
-
-/* Reset & Base */
-*{box-sizing:border-box;margin:0;padding:0}
-html,body{overflow-x:hidden;width:100%;max-width:100%}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.8;color:var(--wc-color-text);background:var(--wc-color-bg)}
-
-/* Skip Link for Accessibility */
-.skip-link{position:absolute;top:-40px;left:0;background:#333;color:#fff;padding:8px 16px;text-decoration:none;border-radius:0 0 4px 0;z-index:99999}
-.skip-link:focus{top:0}
-.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-
-/* NOTE: Navigation chrome (hamburger, nav menu, footer) injected by Worker HTMLRewriter */
-
-/* Main Content - SEO Best Practices for Readability */
-main{padding-top:70px;overflow-x:hidden}
-.container{max-width:720px;margin:0 auto;padding:40px 24px;overflow-wrap:break-word;word-wrap:break-word;overflow-x:hidden}
-
-/* Typography - Optimized for readability (45-75 chars per line) */
-body{font-size:18px;line-height:1.75;letter-spacing:-0.01em}
-article{font-size:18px;line-height:1.8;color:#1a1a1a;overflow-wrap:break-word;word-wrap:break-word}
-article p{margin-bottom:1.5em;text-align:left;word-spacing:0.05em;overflow-wrap:break-word;hyphens:auto;-webkit-hyphens:auto}
-h1{font-size:2rem;margin-bottom:20px;color:var(--wc-color-primary);line-height:1.3;letter-spacing:-0.02em}
-h2{font-size:1.4rem;margin:48px 0 24px;border-bottom:2px solid var(--wc-color-border);padding-bottom:12px;line-height:1.4}
-h3{font-size:1.15rem;margin:32px 0 16px;line-height:1.4}
-p{margin-bottom:1.25em;overflow-wrap:break-word;hyphens:auto;-webkit-hyphens:auto}
-ul,ol{margin:1.25em 0 1.5em 1.5em;line-height:1.7}
-li{margin-bottom:0.5em;overflow-wrap:break-word}
-a{color:var(--wc-color-primary)}
-
-/* Prevent content overflow - Critical for readability */
-article img,article video,article iframe,article embed,article object{max-width:100%;height:auto;display:block}
-article pre,article code{overflow-x:auto;max-width:100%;white-space:pre-wrap;word-wrap:break-word}
-a{overflow-wrap:break-word;word-break:break-all}
-article *{max-width:100%}
-
-/* Breadcrumb */
-.breadcrumb{font-size:14px;margin-bottom:20px;padding-top:10px}
-.breadcrumb a{color:var(--wc-color-primary);text-decoration:none}
-
-/* Article Introduction - Speakable content */
-.article-intro{font-size:1.15em;line-height:1.8;color:#333;margin-bottom:2em}
-.article-intro p:first-of-type{font-weight:500}
-
-/* Article Images */
-.article-image{margin:30px 0;text-align:center}
-.article-image img{max-width:100%;height:auto;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1)}
-.article-image figcaption{font-size:14px;color:#666;margin-top:10px;font-style:italic}
-
-/* Author Box */
-.author-box{display:flex;gap:16px;padding:20px;background:#f8f9fa;border-radius:8px;margin:24px 0;border-left:4px solid var(--wc-color-primary)}
-.author-box img{width:80px;height:80px;border-radius:50%;object-fit:cover;flex-shrink:0}
-.author-info h4{margin:0 0 4px;color:var(--wc-color-primary)}
-.author-info .credentials{font-size:14px;color:#666;margin-bottom:8px}
-.author-info .bio{font-size:15px;line-height:1.6}
-
-/* Table of Contents */
-.toc{background:linear-gradient(135deg,#f8f9fa,#e9ecef);padding:24px 28px;border-radius:12px;margin:30px 0;border:1px solid #dee2e6;box-shadow:0 2px 8px rgba(0,0,0,0.05)}
-.toc-title{font-size:1.1rem;color:var(--wc-color-primary);margin:0 0 16px 0;padding-bottom:12px;border-bottom:2px solid var(--wc-color-primary)}
-.toc-list{list-style:none;margin:0;padding:0;counter-reset:toc-counter}
-.toc-list li{margin:0;padding:10px 0;border-bottom:1px solid rgba(0,0,0,0.08);counter-increment:toc-counter}
-.toc-list li:last-child{border-bottom:none}
-.toc-list li::before{content:counter(toc-counter) ".";color:var(--wc-color-primary);font-weight:700;margin-right:10px}
-.toc-list a{color:#333;text-decoration:none;font-weight:500;transition:color 0.2s}
-.toc-list a:hover{color:var(--wc-color-primary);text-decoration:underline}
-
-/* Quick Answer Box - Featured Snippet Optimization (Position 0) */
-.quick-answer{background:#fff3cd;border:2px solid #ffc107;border-radius:8px;padding:20px 25px;margin:20px 0 30px 0;font-size:1.1em;line-height:1.7}
-.quick-answer strong{color:#856404;display:block;margin-bottom:8px;font-size:0.95em;text-transform:uppercase;letter-spacing:0.5px}
-
-/* Key Takeaways (speakable content) */
-.key-takeaways{background:linear-gradient(135deg,#e8f4f8 0%,#d4e8ed 100%);border-left:4px solid var(--wc-color-primary);padding:20px 25px;border-radius:0 8px 8px 0;margin:30px 0}
-.key-takeaways h2{font-size:1.2rem;margin:0 0 15px 0;color:var(--wc-color-primary)}
-.key-takeaways ul{margin:0;padding-left:20px}
-.key-takeaways li{margin:8px 0;line-height:1.6}
-
-/* AEO: Definition Box - For Featured Snippets & AI Citation */
-.definition-box{background:linear-gradient(135deg,#f0f4ff 0%,#e8ecff 100%);border:1px solid #c7d2fe;border-radius:8px;padding:16px 20px;margin:20px 0;font-size:1.05em;line-height:1.7}
-.definition-box strong{color:#4338ca;margin-right:8px}
-.definition-box p{margin:0}
-
-/* GEO: Key Facts - For AI Search Engine Citation */
-.key-facts{background:linear-gradient(135deg,#fef3c7 0%,#fde68a 100%);border-left:4px solid #f59e0b;padding:16px 20px;border-radius:0 8px 8px 0;margin:20px 0}
-.key-facts h3{font-size:1rem;margin:0 0 12px 0;color:#92400e;display:flex;align-items:center;gap:8px}
-.key-facts h3::before{content:"📊";font-size:1.1em}
-.key-facts ul{margin:0;padding-left:20px;list-style-type:none}
-.key-facts li{margin:6px 0;line-height:1.6;position:relative;padding-left:20px}
-.key-facts li::before{content:"✓";position:absolute;left:0;color:#059669;font-weight:bold}
-
-/* Tables - Responsive with horizontal scroll */
-.table-wrapper{overflow-x:auto;margin:20px 0;-webkit-overflow-scrolling:touch;max-width:100%}
-table{width:100%;border-collapse:collapse;min-width:500px;table-layout:fixed}
-th,td{padding:12px;border:1px solid var(--wc-color-border);text-align:left;overflow-wrap:break-word;word-wrap:break-word}
-th{background:#f8f8f8;font-weight:600}
-td{max-width:200px}
-/* Enhanced Comparison Table for Featured Snippets */
-.comparison-table-wrapper{margin:30px 0;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.08);overflow:hidden}
-.comparison-table{min-width:100%;margin:0;border:none;border-radius:0}
-.comparison-table caption{padding:16px 20px;background:linear-gradient(135deg,var(--wc-color-primary) 0%,var(--wc-color-primary-dark) 100%);color:#fff;font-weight:600;font-size:1.1rem;text-align:left}
-.comparison-table thead th{background:#f8fafc;color:var(--wc-color-text);font-weight:700;padding:14px 16px;border-bottom:2px solid var(--wc-color-primary)}
-.comparison-table .provider-col{width:140px}
-.comparison-table .provider-name{background:#f8fafc;font-weight:600;color:var(--wc-color-primary)}
-.comparison-table tbody tr:nth-child(even){background:#fafbfc}
-.comparison-table tbody tr:hover{background:#e8f4f8}
-.table-source{padding:12px 20px;background:#f8fafc;font-size:0.85rem;color:#666;border-top:1px solid var(--wc-color-border);font-style:italic}
-
-/* FAQ Section */
-.faq{background:#f8f8f8;padding:24px;border-radius:8px;margin:40px 0}
-.faq-item{margin-bottom:24px;padding-bottom:24px;border-bottom:1px solid var(--wc-color-border)}
-.faq-item:last-child{margin-bottom:0;padding-bottom:0;border-bottom:none}
-.faq-item h3{color:var(--wc-color-primary);margin-bottom:8px}
-
-/* Sources Section */
-.sources-section{background:#f0f7ff;padding:24px;border-radius:8px;margin:40px 0;border-left:4px solid var(--wc-color-primary)}
-.sources-section h2{color:var(--wc-color-primary);margin-bottom:16px}
-.sources-list{list-style:none;padding:0;margin:0}
-.sources-list li{padding:12px 0;border-bottom:1px solid rgba(0,0,0,0.1)}
-.sources-list li:last-child{border-bottom:none}
-.sources-list a{color:var(--wc-color-primary);font-weight:600;text-decoration:none}
-.sources-list a:hover{text-decoration:underline}
-
-/* Related Articles Section */
-.related-articles{background:#f5fff5;padding:24px;border-radius:8px;margin:40px 0;border-left:4px solid #28a745}
-.related-articles h2{color:#28a745;margin-bottom:16px}
-.related-list{list-style:none;padding:0;margin:0}
-.related-list li{padding:12px 0;border-bottom:1px solid rgba(0,0,0,0.1)}
-.related-list li:last-child{border-bottom:none}
-.related-list a{color:#28a745;font-weight:600;text-decoration:none}
-.related-list a:hover{text-decoration:underline}
-
-/* Video Hero Section - Prominent placement for Google Video indexing */
-.video-hero{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);padding:24px;border-radius:12px;margin:20px 0 32px;box-shadow:0 8px 32px rgba(0,0,0,0.15)}
-.video-hero-title{color:#fff;font-size:1.1rem;margin:0 0 16px;font-weight:600;display:flex;align-items:center;gap:8px}
-.video-hero-title::before{content:'▶';color:#ff6b35;font-size:0.9rem}
-.video-hero .video-container{position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:8px;margin-bottom:16px;box-shadow:0 4px 20px rgba(0,0,0,0.3)}
-.video-hero .video-container iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:none;border-radius:8px}
-.video-hero-meta{color:#b8b8b8;font-size:14px;margin:0;display:flex;flex-wrap:wrap;gap:12px;align-items:center}
-.video-hero-meta strong{color:#fff}
-.video-hero-cta{color:#ff6b35;font-size:13px;margin-top:12px;font-style:italic}
-
-/* Legacy Video Section - YouTube Embed (fallback) */
-.video-section{background:#fff8f0;padding:24px;border-radius:8px;margin:40px 0;border-left:4px solid #ff6b35}
-.video-section h2{color:#d44d00;margin-bottom:16px;font-size:1.3rem}
-.video-container{position:relative;padding-bottom:56.25%;height:0;overflow:hidden;max-width:100%;border-radius:8px;margin-bottom:12px}
-.video-container iframe{position:absolute;top:0;left:0;width:100%;height:100%;border-radius:8px}
-.video-meta{color:#666;font-size:14px;margin:0}
-
-/* Pros & Cons Section - Google Rich Results optimized */
-.pros-cons-section{margin:40px 0;padding:0}
-.pros-cons-section h2{color:var(--wc-color-primary);margin-bottom:8px}
-.pros-cons-intro{color:#666;margin-bottom:24px;font-size:15px}
-.pros-cons-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:24px}
-.pros-cons-card{background:#fff;border:1px solid #e2e2e2;border-radius:12px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.06)}
-.pros-cons-card h3{font-size:1.1rem;color:var(--wc-color-primary);margin:0 0 16px 0;padding-bottom:12px;border-bottom:2px solid var(--wc-color-primary)}
-.pros-cons-card .pros,.pros-cons-card .cons{margin-bottom:16px}
-.pros-cons-card .pros:last-child,.pros-cons-card .cons:last-child{margin-bottom:0}
-.pros-cons-card h4{font-size:0.95rem;margin:0 0 10px 0;display:flex;align-items:center;gap:8px}
-.pros-cons-card .pros h4{color:#28a745}
-.pros-cons-card .cons h4{color:#dc3545}
-.icon-pros{color:#28a745;font-weight:bold;font-size:1.1em}
-.icon-cons{color:#dc3545;font-weight:bold;font-size:1.1em}
-.pros-cons-card ul{list-style:none;padding:0;margin:0}
-.pros-cons-card li{padding:8px 0 8px 24px;position:relative;font-size:15px;line-height:1.5;border-bottom:1px solid rgba(0,0,0,0.05)}
-.pros-cons-card li:last-child{border-bottom:none}
-.pros-cons-card .pros li::before{content:"✓";position:absolute;left:0;color:#28a745;font-weight:bold}
-.pros-cons-card .cons li::before{content:"✗";position:absolute;left:0;color:#dc3545;font-weight:bold}
-
-/* Conclusion */
-.conclusion{background:linear-gradient(135deg,#326891,#265073);color:#fff;padding:24px;border-radius:8px;margin:40px 0}
-.conclusion h2{color:#fff;border-bottom-color:rgba(255,255,255,0.3)}
-
-/* Video Hero - Primary Content Section for Google Video Mode */
-.video-hero{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);padding:24px;border-radius:12px;margin:20px 0 32px;box-shadow:0 8px 32px rgba(0,0,0,0.15)}
-.video-hero-title{color:#fff;font-size:1.1rem;margin:0 0 16px;font-weight:600;display:flex;align-items:center;gap:8px}
-.video-hero-title::before{content:'▶';color:#ff6b35;font-size:0.9rem}
-.video-hero .video-container{position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:8px;margin-bottom:16px;box-shadow:0 4px 20px rgba(0,0,0,0.3)}
-.video-hero .video-container iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:none;border-radius:8px}
-.video-hero-meta{color:#b8b8b8;font-size:14px;margin:0;display:flex;flex-wrap:wrap;gap:12px;align-items:center}
-.video-hero-meta strong{color:#fff}
-.video-hero-cta{color:#ff6b35;font-size:13px;margin-top:12px;font-style:italic}
-
-/* Disclaimer */
-.disclaimer{background:#f8f9fa;padding:12px 20px;text-align:center;font-size:14px;border-bottom:1px solid #e5e5e5}
-.disclaimer a{color:#d63384;text-decoration:none}
-
-/* Footer */
-.site-footer{background:#1a1a1a;color:#fff;padding:60px 20px 40px;margin-top:60px}
-.footer-content{max-width:1200px;margin:0 auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:40px}
-.footer-section h4{font-size:16px;margin-bottom:16px;color:#fff}
-.footer-section ul{list-style:none;padding:0;margin:0}
-.footer-section li{margin-bottom:8px}
-.footer-section a{color:#aaa;text-decoration:none;font-size:14px}
-.footer-section a:hover{color:#fff}
-.footer-bottom{max-width:1200px;margin:40px auto 0;padding-top:20px;border-top:1px solid #333;text-align:center;color:#666;font-size:13px}
-.footer-bottom a{color:#888;text-decoration:none;margin:0 12px}
-
-/* Responsive - Mobile-first readability */
-@media (max-width:768px){
-  body{font-size:17px}
-  article{font-size:17px;line-height:1.75}
-  h1{font-size:1.6rem}
-  h2{font-size:1.25rem;margin:36px 0 18px}
-  h3{font-size:1.1rem}
-  .container{padding:32px 20px}
-  .author-box{flex-direction:column;text-align:center}
-  .author-box img{margin:0 auto}
-  .footer-content{grid-template-columns:1fr 1fr}
-}
-@media (max-width:480px){
-  body{font-size:16px}
-  article{font-size:16px;line-height:1.7}
-  h1{font-size:1.4rem}
-  .container{padding:24px 16px}
-  .footer-content{grid-template-columns:1fr}
-  .key-takeaways{padding:16px 18px}
-  .faq{padding:18px}
-  .conclusion{padding:18px}
-}
-
-/* Reduced Motion */
-@media (prefers-reduced-motion:reduce){
-  *,*::before,*::after{animation-duration:0.01ms !important;transition-duration:0.01ms !important}
-}
-
-/* Print - hide chrome elements injected by Worker */
-@media print{
-  .hamburger-menu,.nav-menu,.universal-footer,.skip-link{display:none !important}
-  body{padding-top:0}
-}
-</style>
-</head>
-<body>
-<!-- Google Tag Manager (noscript) -->
-<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-KPSXGQWC" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
-
-<!-- NOTE: Navigation chrome (hamburger, nav, footer) injected by Worker HTMLRewriter -->
-
-<!-- Disclaimer Banner -->
-<div class="disclaimer">
-  We independently review everything we recommend. When you buy through our links, we may earn a commission.
-  <a href="https://catsluvus.com/affiliate-disclosure/">Learn more ›</a>
-</div>
-
-<main id="main-content">
-<div class="container">
-<nav class="breadcrumb" aria-label="Breadcrumb">
-<a href="/">Home</a> › <a href="${categoryBasePath}">${categoryName}</a> › ${article.title}
-</nav>
-<article itemscope itemtype="https://schema.org/Article">
-<h1 itemprop="headline">${article.title}</h1>
-
-${video ? `
-<section class="video-hero" id="video" itemprop="video" itemscope itemtype="https://schema.org/VideoObject">
-<meta itemprop="name" content="${video.title.replace(/"/g, '&quot;')}">
-<meta itemprop="description" content="Expert video guide covering ${keyword}. Watch for tips, advice, and essential information from ${video.channel}.">
-<meta itemprop="thumbnailUrl" content="${video.thumbnailUrl || `https://img.youtube.com/vi/${video.videoId}/maxresdefault.jpg`}">
-<meta itemprop="uploadDate" content="${video.publishedAt || new Date().toISOString().split('T')[0]}">
-<meta itemprop="duration" content="${video.isoDuration || 'PT5M'}">
-<meta itemprop="embedUrl" content="${video.embedUrl}">
-<meta itemprop="contentUrl" content="https://www.youtube.com/watch?v=${video.videoId}">
-<span itemprop="publisher" itemscope itemtype="https://schema.org/Organization">
-  <meta itemprop="name" content="${video.channel}">
-</span>
-<p class="video-hero-title">Watch: Expert Guide on ${keyword}</p>
-<div class="video-container">
-<iframe 
-  src="${video.embedUrl}?rel=0&modestbranding=1&autoplay=0" 
-  title="${video.title}" 
-  frameborder="0" 
-  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
-  allowfullscreen
-  loading="eager"
-  width="560" 
-  height="315">
-</iframe>
-</div>
-<p class="video-hero-meta"><strong itemprop="author">${video.channel}</strong> • <span>${video.duration}</span> • <span itemprop="interactionStatistic" itemscope itemtype="https://schema.org/InteractionCounter"><meta itemprop="interactionType" content="https://schema.org/WatchAction"><span itemprop="userInteractionCount">${video.views}</span></span></p>
-<p class="video-hero-cta">Continue reading below for our complete written guide with pricing, comparisons, and FAQs.</p>
-</section>
-` : ''}
-
-<p><strong>Last Updated:</strong> <time datetime="${new Date().toISOString().split('T')[0]}">${dateStr}</time></p>
-
-<div class="author-box" itemprop="author" itemscope itemtype="https://schema.org/Person">
-<img src="${author.image}" alt="${author.name}" itemprop="image" loading="lazy">
-<div class="author-info">
-<h4 itemprop="name">${author.name}</h4>
-<p class="credentials" itemprop="jobTitle">${author.credentials}</p>
-<p class="bio" itemprop="description">${author.bio}</p>
-</div>
-</div>
-
-<div class="quick-answer" itemprop="description">
-<strong>Quick Answer:</strong> ${article.quickAnswer || `The ${keyword} options include Lemonade ($15-40/month), Healthy Paws, and Trupanion. Compare plans with 70-90% reimbursement, $100-500 deductibles, and coverage for accidents, illnesses, and preventive care.`}
-</div>
-
-${article.definitionSnippet ? `
-<div class="definition-box" itemscope itemtype="https://schema.org/DefinedTerm">
-<meta itemprop="name" content="${keyword}">
-<p itemprop="description"><strong>Definition:</strong> ${article.definitionSnippet}</p>
-</div>
-` : ''}
-
-<div class="key-takeaways">
-<h2>Key Takeaways</h2>
-<ul>
-${article.keyTakeaways?.map((takeaway: string) => `<li>${takeaway}</li>`).join('\n') || `
-<li>Compare top pet insurance providers to find the best coverage for your pet's needs</li>
-<li>Consider factors like deductibles, reimbursement rates, and annual limits when choosing a plan</li>
-<li>Most plans exclude pre-existing conditions, so enroll your pet while they're healthy</li>
-<li>Waiting periods typically range from 2-14 days for accidents and 14-30 days for illnesses</li>
-`}
-</ul>
-</div>
-
-${article.keyFacts && article.keyFacts.length > 0 ? `
-<div class="key-facts" itemscope itemtype="https://schema.org/ItemList">
-<h3 itemprop="name">Key Facts</h3>
-<ul itemprop="itemListElement">
-${article.keyFacts.map((fact: string, index: number) => `<li itemprop="name" data-position="${index + 1}">${fact}</li>`).join('\n')}
-</ul>
-</div>
-` : ''}
-
-<div class="introduction article-intro" itemprop="articleBody">
-${linkedIntro}
-</div>
-
-${article.images?.[0] ? `<figure class="article-image">
-<img src="${article.images[0].url}" alt="${article.images[0].alt}" loading="lazy" width="800" height="533" style="width: 100%; height: auto; max-width: 100%;">
-<figcaption>${article.images[0].caption}</figcaption>
-</figure>` : ''}
-
-<nav class="toc" aria-label="Table of contents" id="table-of-contents">
-<h2 class="toc-title">In This Article</h2>
-<ol class="toc-list">
-${tocHtml}
-${article.comparisonTable ? '<li><a href="#comparison">Provider Comparison</a></li>' : ''}
-${article.providerProsCons && article.providerProsCons.length > 0 ? '<li><a href="#pros-cons">Provider Pros & Cons</a></li>' : ''}
-<li><a href="#faq">Frequently Asked Questions</a></li>
-${article.externalLinks && article.externalLinks.length > 0 ? '<li><a href="#sources">Sources & References</a></li>' : ''}
-${article.internalLinks && article.internalLinks.length > 0 ? '<li><a href="#related">Related Articles</a></li>' : ''}
-</ol>
-</nav>
-
-${sectionsHtml}
-
-${article.comparisonTable ? `<h2 id="comparison">Provider Comparison</h2>\n<div class="table-wrapper">${tableHtml}</div>` : ''}
-
-${prosConsHtml}
-
-${article.images?.[1] ? `<figure class="article-image">
-<img src="${article.images[1].url}" alt="${article.images[1].alt}" loading="lazy" width="800" height="533" style="width: 100%; height: auto; max-width: 100%;">
-<figcaption>${article.images[1].caption}</figcaption>
-</figure>` : ''}
-
-<div class="faq" id="faq">
-<h2>Frequently Asked Questions</h2>
-${faqsHtml}
-</div>
-
-${externalLinksHtml}
-
-${internalLinksHtml}
-
-${video ? `
-<section class="video-section" id="video">
-<h2>Watch: ${video.title}</h2>
-<div class="video-container">
-<iframe 
-  src="${video.embedUrl}?rel=0&modestbranding=1" 
-  title="${video.title}" 
-  frameborder="0" 
-  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
-  allowfullscreen
-  loading="lazy"
-  width="560" 
-  height="315">
-</iframe>
-</div>
-<p class="video-meta">Video by <strong>${video.channel}</strong> • ${video.duration} • ${video.views}</p>
-</section>
-` : ''}
-
-${article.images?.[2] ? `<figure class="article-image">
-<img src="${article.images[2].url}" alt="${article.images[2].alt}" loading="lazy" width="800" height="533" style="width: 100%; height: auto; max-width: 100%;">
-<figcaption>${article.images[2].caption}</figcaption>
-</figure>` : ''}
-
-<div class="conclusion">
-<h2>Conclusion</h2>
-${linkedConclusion}
-</div>
-
-</article>
-</div>
-</main>
-<!-- NOTE: Footer and menu JS injected by Worker HTMLRewriter -->
-</body>
-</html>`;
-}
 
 /**
  * SEO Tools for Copilot SDK Agent (using JSON Schema for parameters)
@@ -3948,7 +3092,7 @@ async function getSEOTools() {
         required: ['article', 'slug', 'keyword']
       },
       handler: async (args: { article: ArticleData; slug: string; keyword: string }) => {
-        const html = buildArticleHtml(args.article, args.slug, args.keyword, undefined, activeCategoryContext);
+        const html = buildArticleHtml(args.article, args.slug, args.keyword, activeCategoryContext, undefined, undefined, undefined);
         return html.substring(0, 500) + '... [HTML built successfully, ' + html.length + ' chars]';
       }
     })
@@ -4166,7 +3310,7 @@ Return ONLY valid JSON (no markdown code blocks, no explanation before/after):
     }
 
     // Build HTML and deploy to Cloudflare KV - pass activeCategoryContext for dynamic breadcrumbs/URLs
-    const html = buildArticleHtml(article, slug, keyword, video, activeCategoryContext);
+    const html = buildArticleHtml(article, slug, keyword, activeCategoryContext, video, undefined, undefined);
     
     // Calculate SEO score using seord library
     const seoScore = await calculateSEOScore(html, keyword, article.title, article.metaDescription);
@@ -4471,7 +3615,7 @@ Return ONLY valid JSON (no markdown code blocks):
     }
 
     // Build HTML and deploy to Cloudflare KV - pass activeCategoryContext for dynamic breadcrumbs/URLs
-    const html = buildArticleHtml(article, slug, keyword, video, activeCategoryContext);
+    const html = buildArticleHtml(article, slug, keyword, activeCategoryContext, video, undefined, undefined);
     
     // Calculate SEO score
     const seoScore = await calculateSEOScore(html, keyword, article.title, article.metaDescription);
@@ -6477,6 +5621,7 @@ router.get('/research/context', async (_req: Request, res: Response) => {
 
 /**
  * Start autonomous generation mode
+ * V3 uses exclusive categories - auto-discovers and generates for V3-only categories
  * Runs as fast as possible with no delay - rate limits handle throttling naturally
  */
 router.post('/autonomous/start', async (req: Request, res: Response) => {
@@ -6488,29 +5633,60 @@ router.post('/autonomous/start', async (req: Request, res: Response) => {
   autonomousRunning = true;
   startHeartbeat();
 
-  addActivityLog('info', `Autonomous mode STARTED (NO DELAY - max speed)`, {
-    remaining: stats.pending
-  });
+  // V3 FIX: Use V3-exclusive category generation instead of shared V2 keywords
+  // This ensures V3 works on its own categories (cat-toys-interactive, etc.)
+  // and doesn't compete with V2 on the same keywords
+  const useV3Categories = req.body.useV3Categories !== false; // Default to true
 
-  // Start continuous generation - no interval, runs as fast as possible
-  generateNextArticle();
+  if (useV3Categories) {
+    // Set V3 autonomous flag (separate from legacy autonomousRunning)
+    v3AutonomousRunning = true;
 
-  res.json({
-    success: true,
-    running: true,
-    mode: 'max-speed',
-    message: 'Autonomous generation started (no delay - max speed)'
-  });
+    addActivityLog('info', `V3 Autonomous mode STARTED - using V3-exclusive categories`, {
+      categories: V3_EXCLUSIVE_CATEGORIES.slice(0, 3).join(', ') + '...'
+    });
+
+    // Start V3 category-based generation (uses runV3AutonomousGeneration)
+    runV3AutonomousGeneration();
+
+    res.json({
+      success: true,
+      running: true,
+      mode: 'v3-categories',
+      message: 'V3 autonomous generation started (exclusive categories)',
+      categories: V3_EXCLUSIVE_CATEGORIES
+    });
+  } else {
+    // Legacy mode: use shared V2 keywords (for backwards compatibility)
+    addActivityLog('info', `Autonomous mode STARTED (legacy V2 keywords)`, {
+      remaining: stats.pending
+    });
+
+    generateNextArticle();
+
+    res.json({
+      success: true,
+      running: true,
+      mode: 'legacy-v2-keywords',
+      message: 'Autonomous generation started (legacy V2 keywords)'
+    });
+  }
 });
 
 /**
- * Stop autonomous generation
+ * Stop autonomous generation (both V2 legacy and V3 category modes)
  */
 router.post('/autonomous/stop', async (_req: Request, res: Response) => {
+  const wasV3Running = v3AutonomousRunning;
+  const wasLegacyRunning = autonomousRunning;
+
   autonomousRunning = false;
+  v3AutonomousRunning = false;
   stopHeartbeat();
 
   addActivityLog('info', 'Autonomous mode STOPPED', {
+    v3Mode: wasV3Running,
+    legacyMode: wasLegacyRunning,
     remaining: stats.pending,
     queuePosition: stats.generated
   });
@@ -6518,19 +5694,65 @@ router.post('/autonomous/stop', async (_req: Request, res: Response) => {
   res.json({
     success: true,
     running: false,
+    stoppedModes: {
+      v3Categories: wasV3Running,
+      legacyV2Keywords: wasLegacyRunning
+    },
     message: 'Autonomous generation stopped'
   });
 });
 
 /**
  * Get autonomous status with queue information
+ * Returns V3 category context when in V3 mode, legacy queue info otherwise
  */
 router.get('/autonomous/status', async (_req: Request, res: Response) => {
   try {
+    // V3 MODE: Return V3-exclusive category context
+    if (v3AutonomousRunning || v3CategoryContext) {
+      const pendingKeywords = v3CategoryContext?.keywords?.filter(k => k.status === 'pending') || [];
+      const totalKeywords = v3CategoryContext?.keywords?.length || 0;
+      const completedKeywords = totalKeywords - pendingKeywords.length;
+      const percentComplete = totalKeywords > 0 ? ((completedKeywords / totalKeywords) * 100).toFixed(2) : '0.00';
+
+      // Get next keyword from V3 context
+      const sortedPending = [...pendingKeywords].sort((a, b) => {
+        const priorityOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
+        const aPriority = (a.priority || 'low').toLowerCase();
+        const bPriority = (b.priority || 'low').toLowerCase();
+        const priorityDiff = (priorityOrder[aPriority] ?? 2) - (priorityOrder[bPriority] ?? 2);
+        if (priorityDiff !== 0) return priorityDiff;
+        return (b.score || 0) - (a.score || 0);
+      });
+
+      return res.json({
+        running: v3AutonomousRunning,
+        mode: 'v3-categories',
+        generated: completedKeywords,
+        remaining: pendingKeywords.length,
+        totalKeywords: totalKeywords,
+        percentComplete: percentComplete,
+        category: v3CategoryContext?.category || null,
+        niche: v3CategoryContext?.niche || null,
+        domain: v3CategoryContext?.domain || 'catsluvus.com',
+        basePath: v3CategoryContext?.basePath || null,
+        nextKeyword: sortedPending[0] ? {
+          keyword: sortedPending[0].keyword,
+          slug: sortedPending[0].slug,
+          priority: sortedPending[0].priority,
+          score: sortedPending[0].score,
+          category: v3CategoryContext?.category
+        } : null,
+        exclusiveCategories: V3_EXCLUSIVE_CATEGORIES
+      });
+    }
+
+    // LEGACY MODE: Return V2 keyword queue info
     const queueStatus = await getGenerationQueueStatus();
 
     res.json({
       running: autonomousRunning,
+      mode: 'legacy-v2-keywords',
       generated: queueStatus.generated,
       remaining: queueStatus.remaining,
       totalKeywords: queueStatus.totalKeywords,
@@ -6546,7 +5768,7 @@ router.get('/autonomous/status', async (_req: Request, res: Response) => {
     });
   } catch (error: any) {
     res.json({
-      running: autonomousRunning,
+      running: autonomousRunning || v3AutonomousRunning,
       generated: stats.generated,
       pending: stats.pending,
       percentComplete: stats.percentComplete,
@@ -6688,6 +5910,142 @@ router.get('/category-status/:category', async (req: Request, res: Response) => 
       actualArticleCount: articleCount
     });
   } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Regenerate all articles in a category (delete from KV and reset status)
+ */
+router.post('/regenerate-category/:category', async (req: Request, res: Response) => {
+  try {
+    const { category } = req.params;
+    const cfApiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    
+    if (!cfApiToken) {
+      return res.status(500).json({ error: 'Cloudflare API token not configured' });
+    }
+    
+    console.log(`[SEO-V3] 🔄 Starting regeneration for category: ${category}`);
+    
+    // 1. Get all article keys for this category from KV
+    const listUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/keys?prefix=${category}:`;
+    const listRes = await fetch(listUrl, { headers: { 'Authorization': `Bearer ${cfApiToken}` } });
+    const listData = await listRes.json() as any;
+    
+    const articleKeys = listData.result?.map((k: any) => k.name) || [];
+    console.log(`[SEO-V3] Found ${articleKeys.length} articles to delete in ${category}`);
+    
+    // 2. Delete each article from KV
+    let deleted = 0;
+    for (const key of articleKeys) {
+      const deleteUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(key)}`;
+      try {
+        await fetch(deleteUrl, { method: 'DELETE', headers: { 'Authorization': `Bearer ${cfApiToken}` } });
+        deleted++;
+      } catch (e) {
+        console.log(`[SEO-V3] Failed to delete ${key}`);
+      }
+    }
+    console.log(`[SEO-V3] ✓ Deleted ${deleted}/${articleKeys.length} articles`);
+    
+    // 3. Reset category status to in_progress
+    const categoryStatus = await getCategoryStatus(category);
+    if (categoryStatus) {
+      await saveCategoryStatus(category, {
+        ...categoryStatus,
+        status: 'in_progress',
+        articleCount: 0,
+        completedAt: undefined
+      });
+      console.log(`[SEO-V3] ✓ Reset category status to in_progress`);
+    }
+    
+    // 4. Reset keywords in research context if exists
+    const kvPrefix = `${category}:`;
+    const { categoryContext } = await loadResearchFromKV(kvPrefix);
+    if (categoryContext && categoryContext.keywords) {
+      categoryContext.keywords = categoryContext.keywords.map(k => ({ ...k, status: 'pending' }));
+      await saveResearchToKV({ researchPhase: 'regenerating' } as any, categoryContext);
+      console.log(`[SEO-V3] ✓ Reset ${categoryContext.keywords.length} keywords to pending`);
+    }
+    
+    addActivityLog('info', `[V3] Regeneration started for ${category}`, { deleted, total: articleKeys.length });
+    
+    res.json({
+      success: true,
+      category,
+      articlesDeleted: deleted,
+      message: `Deleted ${deleted} articles. Category reset to in_progress. V3 autonomous will regenerate.`
+    });
+  } catch (error: any) {
+    console.error(`[SEO-V3] Regeneration error:`, error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Regenerate ALL V3 categories (for major fixes like video/image bug)
+ */
+router.post('/regenerate-all', async (_req: Request, res: Response) => {
+  try {
+    const allStatuses = await getAllCategoryStatuses();
+    const results: any[] = [];
+    
+    console.log(`[SEO-V3] 🔄 Starting FULL regeneration of ${allStatuses.length} categories`);
+    
+    for (const catStatus of allStatuses) {
+      const category = catStatus.category;
+      const cfApiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+      
+      // Get articles for this category
+      const listUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/keys?prefix=${category}:`;
+      const listRes = await fetch(listUrl, { headers: { 'Authorization': `Bearer ${cfApiToken}` } });
+      const listData = await listRes.json() as any;
+      const articleKeys = listData.result?.map((k: any) => k.name) || [];
+      
+      // Delete articles
+      let deleted = 0;
+      for (const key of articleKeys) {
+        const deleteUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(key)}`;
+        try {
+          await fetch(deleteUrl, { method: 'DELETE', headers: { 'Authorization': `Bearer ${cfApiToken}` } });
+          deleted++;
+        } catch (e) {}
+      }
+      
+      // Reset status
+      await saveCategoryStatus(category, {
+        ...catStatus,
+        status: 'in_progress',
+        articleCount: 0,
+        completedAt: undefined
+      });
+      
+      // Reset keywords
+      const kvPrefix = `${category}:`;
+      const { categoryContext } = await loadResearchFromKV(kvPrefix);
+      if (categoryContext && categoryContext.keywords) {
+        categoryContext.keywords = categoryContext.keywords.map(k => ({ ...k, status: 'pending' }));
+        await saveResearchToKV({ researchPhase: 'regenerating' } as any, categoryContext);
+      }
+      
+      results.push({ category, deleted, keywordsReset: categoryContext?.keywords?.length || 0 });
+      console.log(`[SEO-V3] ✓ Reset ${category}: ${deleted} articles deleted`);
+    }
+    
+    addActivityLog('success', `[V3] FULL REGENERATION: ${results.length} categories reset`, { 
+      totalArticles: results.reduce((sum, r) => sum + r.deleted, 0)
+    });
+    
+    res.json({
+      success: true,
+      categoriesReset: results.length,
+      totalArticlesDeleted: results.reduce((sum, r) => sum + r.deleted, 0),
+      results
+    });
+  } catch (error: any) {
+    console.error(`[SEO-V3] Full regeneration error:`, error);
     res.status(500).json({ error: error.message });
   }
 });
