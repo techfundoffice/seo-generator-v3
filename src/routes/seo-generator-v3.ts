@@ -608,7 +608,7 @@ function searchYouTubeVideo(keyword: string): YouTubeSearchResult {
 }
 
 // ============================================================================
-// V2 Video Search Funnel - 5-Level Relevance-Based Video Discovery
+// V3 Video Search Funnel - 5-Level Relevance-Based Video Discovery
 // See .github/skills/video-search-funnel/SKILL.md for full specification
 // ============================================================================
 
@@ -640,7 +640,7 @@ const FUNNY_CAT_CONTEXT_ACTIONS: Record<string, string[]> = {
 };
 
 // ============================================================================
-// V2 CATEGORY-SPECIFIC CONTENT DATA
+// V3 CATEGORY-SPECIFIC CONTENT DATA
 // Dynamic authors, brands, images, FAQs, and external links per category
 // Prevents hardcoded DNA testing content from appearing in litter box articles
 // ============================================================================
@@ -1297,11 +1297,26 @@ const CLOUDFLARE_ACCOUNT_ID = 'bc8e15f958dc350e00c0e39d80ca6941';
 const CLOUDFLARE_KV_NAMESPACE_ID = 'bd3b856b2ae147ada9a8d236dd4baf30';
 const CLOUDFLARE_ZONE_ID = '646da2c86dbbe1dff196c155381b0704';
 const CLOUDFLARE_WORKER_NAME = 'petinsurance';
-// V3 shares category status with V2 to prevent duplicate work on same categories
-const CATEGORY_STATUS_PREFIX = 'v2:category:status:';
+// V3 has its own category tracking, independent from V2
+const CATEGORY_STATUS_PREFIX = 'v3:category:status:';
+
+// V3-EXCLUSIVE CATEGORIES - V3 only works on these, V2 works on others
+// This prevents V2 and V3 from competing on the same categories
+const V3_EXCLUSIVE_CATEGORIES = [
+  'cat-toys-interactive',
+  'cat-grooming-tools',
+  'cat-travel-accessories',
+  'cat-training-products',
+  'cat-senior-care',
+  'cat-dental-care',
+  'cat-outdoor-enclosures',
+  'cat-puzzle-feeders',
+  'cat-calming-products',
+  'cat-subscription-boxes'
+];
 
 // ============================================================================
-// V2 Category Status Tracking (Durable State in KV)
+// V3 Category Status Tracking (Durable State in KV)
 // ============================================================================
 
 interface CategoryStatus {
@@ -1322,7 +1337,7 @@ interface DiscoveredCategory {
   reasoning: string;
 }
 
-// NO FALLBACK CATEGORIES - V2 uses fully autonomous discovery via Copilot CLI
+// NO FALLBACK CATEGORIES - V3 uses fully autonomous discovery via Copilot CLI
 // See .github/skills/category-discovery/SKILL.md for discovery prompt standards
 // If discovery fails, system enters cooldown and logs error for manual review
 
@@ -1484,11 +1499,44 @@ async function discoverNextCategory(): Promise<DiscoveredCategory | null> {
     return logDiscoveryError('Discovery in cooldown period - wait for cooldown to expire');
   }
 
-  addActivityLog('info', '[V3] Discovering next high-CPC cat category via Copilot...');
-  
+  addActivityLog('info', '[V3] Selecting next category from V3-exclusive list...');
+
+  // V3 uses its exclusive category list - no AI discovery needed
+  // This prevents overlap with V2 which discovers its own categories
+  const completedCategories = await getCompletedCategories();
+
+  // Find the first V3-exclusive category that hasn't been completed
+  const availableCategory = V3_EXCLUSIVE_CATEGORIES.find(slug => !completedCategories.includes(slug));
+
+  if (!availableCategory) {
+    addActivityLog('info', '[V3] All V3-exclusive categories completed!');
+    return null;
+  }
+
+  // Convert slug to proper name
+  const categoryName = availableCategory
+    .split('-')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+
+  const category: DiscoveredCategory = {
+    name: categoryName,
+    slug: availableCategory,
+    estimatedKeywords: 25,
+    affiliatePotential: 'high',
+    reasoning: 'V3-exclusive category for Cloudflare AI generation'
+  };
+
+  await recordDiscoverySuccess();
+  addActivityLog('success', `[V3] Selected category: ${category.name} (V3-exclusive)`, category);
+  return category;
+}
+
+// Legacy Copilot discovery - kept for reference but not used
+async function discoverNextCategoryViaCopilot(): Promise<DiscoveredCategory | null> {
   const completedCategories = await getCompletedCategories();
   const completedList = completedCategories.join(', ') || 'none yet';
-  
+
   const prompt = `You are a cat niche SEO researcher. Find the next high-value category for catsluvus.com.
 
 ALREADY COMPLETED CATEGORIES (do NOT suggest these):
@@ -1849,7 +1897,7 @@ async function fetchExistingArticleSlugs(): Promise<Set<string>> {
 /**
  * Fetch existing article slugs for V3 category (filtered by kvPrefix)
  */
-async function fetchV2ExistingArticleSlugs(kvPrefix: string): Promise<string[]> {
+async function fetchExistingArticleSlugs(kvPrefix: string): Promise<string[]> {
   const cfApiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
   if (!cfApiToken) return [];
 
@@ -1894,32 +1942,27 @@ async function fetchV2ExistingArticleSlugs(kvPrefix: string): Promise<string[]> 
 }
 
 /**
- * Fetch cross-category articles for internal linking (V2-only)
- * Returns articles from OTHER V2 categories (not the current one) with full URLs
- * V2 is kept separate from V1 - no petinsurance links included
+ * Fetch cross-category articles for internal linking (V3)
+ * Returns articles from OTHER V3 categories (not the current one) with full URLs
+ * V3 is kept separate from V1 petinsurance - uses only V3-exclusive categories
  */
 async function fetchCrossCategoryArticlesForLinking(currentCategoryKvPrefix: string): Promise<string[]> {
   const cfApiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
   if (!cfApiToken) return [];
 
   const articlesWithUrls: string[] = [];
-  
+
   // Normalize current category: remove trailing colon for comparison
   // e.g., "cat-carriers-travel-products:" -> "cat-carriers-travel-products"
   const currentCategoryNormalized = currentCategoryKvPrefix.replace(/:$/, '');
 
   try {
-    // V2-only cross-category linking (no V1 petinsurance - keeping V2 separate)
-    // Fetch articles from known V2 categories (excluding current category)
-    const v2Categories = [
-      'cat-carriers-travel-products',
-      'cat-dna-testing',
-      'cat-food-delivery',
-      'cat-trees-furniture',
-      'cat-boarding'
-    ].filter(cat => cat !== currentCategoryNormalized); // Exact match comparison
+    // V3-only cross-category linking (no V1 petinsurance - V3 separate from V1)
+    // Fetch articles from V3-exclusive categories (excluding current category)
+    const v3Categories = V3_EXCLUSIVE_CATEGORIES
+      .filter(cat => cat !== currentCategoryNormalized); // Exact match comparison
 
-    for (const category of v2Categories.slice(0, 3)) { // Limit to 3 other categories
+    for (const category of v3Categories.slice(0, 3)) { // Limit to 3 other categories
       const catUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/keys?prefix=${encodeURIComponent(category + ':')}&limit=20`;
       const catResponse = await fetch(catUrl, {
         headers: { 'Authorization': `Bearer ${cfApiToken}`, 'Content-Type': 'application/json' }
@@ -1951,7 +1994,7 @@ async function fetchCrossCategoryArticlesForLinking(currentCategoryKvPrefix: str
       }
     }
 
-    console.log(`[Internal Linking] Fetched ${articlesWithUrls.length} V2 cross-category articles (V2-only, no V1 links)`);
+    console.log(`[Internal Linking] Fetched ${articlesWithUrls.length} V3 cross-category articles (V3-only, no V1 links)`);
     return articlesWithUrls;
   } catch (error: any) {
     console.error('[Internal Linking] Error fetching cross-category articles:', error.message);
@@ -1960,9 +2003,9 @@ async function fetchCrossCategoryArticlesForLinking(currentCategoryKvPrefix: str
 }
 
 /**
- * Build V2 article HTML with category-specific context
+ * Build V3 article HTML with category-specific context
  */
-function buildV2ArticleHtml(
+function buildArticleHtml(
   article: ArticleData,
   slug: string,
   keyword: string,
@@ -2484,14 +2527,14 @@ article *{max-width:100%}
 }
 
 /**
- * Update V2 sitemap with new article
+ * Update V3 sitemap with new article
  */
-async function updateV2Sitemap(slug: string, context: CategoryContext): Promise<void> {
+async function updateSitemap(slug: string, context: CategoryContext): Promise<void> {
   const cfApiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
   if (!cfApiToken) return;
 
   // Robust CategoryContext guards - derive from categorySlug if available
-  const derivedSlug = context?.categorySlug || 'v2-articles';
+  const derivedSlug = context?.categorySlug || 'v3-articles';
   const safeKvPrefix = context?.kvPrefix || `${derivedSlug}:`;
   const safeDomain = context?.domain || 'catsluvus.com';
   const safeBasePath = context?.basePath || `/${derivedSlug}`;
@@ -2935,7 +2978,7 @@ interface ArticleData {
 /**
  * Build full HTML page from article data - Universal Template with GTM, AdSense, Hamburger Menu
  * Matches petinsurance main page best practices
- * Now supports dynamic category context for V2 categories
+ * Now supports dynamic category context for V3 categories
  */
 function buildArticleHtml(article: ArticleData, slug: string, keyword: string, video?: YouTubeVideo, categoryContext?: CategoryContext | null): string {
   const year = new Date().getFullYear();
@@ -4610,11 +4653,14 @@ async function loadResearchFromKV(kvPrefix: string): Promise<{ researchOutput: R
 
 /**
  * Fetch current sitemap from public URL (the worker serves it)
+ * @param categorySlug - Category slug for dynamic sitemap URL (defaults to current context)
  */
-async function fetchCurrentSitemap(): Promise<string | null> {
+async function fetchCurrentSitemap(categorySlug?: string): Promise<string | null> {
   try {
-    // Fetch from the public URL since worker generates/serves the sitemap
-    const response = await fetch('https://catsluvus.com/petinsurance/sitemap.xml', {
+    // Use category from context or parameter for dynamic sitemap URL
+    const category = categorySlug || v3CategoryContext?.category || 'petinsurance';
+    const sitemapUrl = `https://catsluvus.com/${category}/sitemap.xml`;
+    const response = await fetch(sitemapUrl, {
       headers: {
         'User-Agent': 'SitemapUpdater/1.0'
       }
@@ -4732,8 +4778,10 @@ async function updateSitemapWithArticle(slug: string, category: string = 'petins
 /**
  * Purge Cloudflare cache for the sitemap URL
  * Supports both Global API Key (full access) and API Token authentication
+ * @param cfApiToken - Cloudflare API token
+ * @param categorySlug - Category slug for dynamic sitemap URL (defaults to current context)
  */
-async function purgeSitemapCache(cfApiToken: string): Promise<boolean> {
+async function purgeSitemapCache(cfApiToken: string, categorySlug?: string): Promise<boolean> {
   try {
     const purgeUrl = `https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/purge_cache`;
 
@@ -4755,13 +4803,15 @@ async function purgeSitemapCache(cfApiToken: string): Promise<boolean> {
       headers['Authorization'] = `Bearer ${cfApiToken}`;
     }
 
+    // Use dynamic category for sitemap URL
+    const category = categorySlug || v3CategoryContext?.category || 'petinsurance';
     const response = await fetch(purgeUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify({
         files: [
-          'https://catsluvus.com/petinsurance/sitemap.xml',
-          'https://www.catsluvus.com/petinsurance/sitemap.xml'
+          `https://catsluvus.com/${category}/sitemap.xml`,
+          `https://www.catsluvus.com/${category}/sitemap.xml`
         ]
       })
     });
@@ -4851,7 +4901,7 @@ router.get('/status', async (_req: Request, res: Response) => {
       pagesNeeded: stats.pending,
       percentComplete: stats.percentComplete,
       lastUpdated: new Date().toISOString(),
-      version: 'v2',
+      version: 'v3',
       skillsEnabled: true
     });
   } catch (error: any) {
@@ -4866,7 +4916,7 @@ router.get('/status', async (_req: Request, res: Response) => {
 // ============================================================================
 
 /**
- * V2: Validate article content with skill-based rules
+ * V3: Validate article content with skill-based rules
  */
 
 /**
@@ -4962,13 +5012,13 @@ router.post('/validate', async (req: Request, res: Response) => {
       profile
     });
   } catch (error: any) {
-    console.error('[V2 Validate] Error:', error.message);
+    console.error('[V3 Validate] Error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
 /**
- * V2: Comprehensive audit of article content
+ * V3: Comprehensive audit of article content
  */
 router.post('/audit', async (req: Request, res: Response) => {
   try {
@@ -4991,13 +5041,13 @@ router.post('/audit', async (req: Request, res: Response) => {
       profile
     });
   } catch (error: any) {
-    console.error('[V2 Audit] Error:', error.message);
+    console.error('[V3 Audit] Error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
 /**
- * V2: Get available skill profiles
+ * V3: Get available skill profiles
  */
 router.get('/skills/profiles', async (_req: Request, res: Response) => {
   try {
@@ -5009,13 +5059,13 @@ router.get('/skills/profiles', async (_req: Request, res: Response) => {
       qualityGates: QUALITY_GATES
     });
   } catch (error: any) {
-    console.error('[V2 Skills] Error:', error.message);
+    console.error('[V3 Skills] Error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
 
 /**
- * V2: Get best practices for a profile (for prompt enhancement)
+ * V3: Get best practices for a profile (for prompt enhancement)
  */
 router.get('/skills/best-practices', async (req: Request, res: Response) => {
   try {
@@ -5031,7 +5081,7 @@ router.get('/skills/best-practices', async (req: Request, res: Response) => {
       skillCount: engine.getLoadedSkills().length
     });
   } catch (error: any) {
-    console.error('[V2 Best Practices] Error:', error.message);
+    console.error('[V3 Best Practices] Error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -5502,9 +5552,9 @@ router.get('/test-sdk', async (_req: Request, res: Response) => {
 });
 
 /**
- * V2: Generate a single article with skill-enhanced pipeline
+ * V3: Generate a single article with skill-enhanced pipeline
  * Integrates skill engine for post-generation auditing and quality gates
- * Requires Copilot to be enabled at https://github.com/settings/copilot
+ * Uses Cloudflare AI for content generation
  */
 router.post('/generate', async (req: Request, res: Response) => {
   const { keyword, skillProfile = 'comprehensive' } = req.body;
@@ -5514,7 +5564,7 @@ router.post('/generate', async (req: Request, res: Response) => {
   }
 
   try {
-    console.log(`🤖 V2 Skill-Enhanced generation: ${keyword} (profile: ${skillProfile})`);
+    console.log(`🤖 V3 Skill-Enhanced generation: ${keyword} (profile: ${skillProfile})`);
 
     // V3: Initialize skill engine for post-generation audit
     const skillEngine = SkillEngine.fromProfile(skillProfile);
@@ -5522,7 +5572,7 @@ router.post('/generate', async (req: Request, res: Response) => {
     console.log(`📚 Loaded ${loadedSkills.length} skills: ${loadedSkills.join(', ')}`);
 
     // Log generation start to activity log
-    addActivityLog('generating', `Generating: "${keyword}" (V2 with ${loadedSkills.length} skills)`, { keyword, skillProfile });
+    addActivityLog('generating', `Generating: "${keyword}" (V3 with ${loadedSkills.length} skills)`, { keyword, skillProfile });
 
     const result = await generateWithCopilotSDK(keyword);
 
@@ -5551,7 +5601,7 @@ router.post('/generate', async (req: Request, res: Response) => {
           const deployedHtml = await response.text();
           skillAudit = skillEngine.auditContent(deployedHtml, keyword);
           deploymentRecommendation = getDeploymentRecommendation(skillAudit.overallScore);
-          console.log(`📊 V2 Skill Audit: ${skillAudit.overallScore}/100 - ${deploymentRecommendation.action}`);
+          console.log(`📊 V3 Skill Audit: ${skillAudit.overallScore}/100 - ${deploymentRecommendation.action}`);
         }
       } catch (auditErr: any) {
         console.log(`⚠️ Skill audit skipped: ${auditErr.message}`);
@@ -5563,7 +5613,7 @@ router.post('/generate', async (req: Request, res: Response) => {
     stats.pending = Math.max(0, stats.pending - 1);
     stats.percentComplete = ((stats.generated / stats.totalKeywords) * 100).toFixed(2);
 
-    console.log(`✅ V2 Generated: ${slug}`);
+    console.log(`✅ V3 Generated: ${slug}`);
 
     if (result.deployed) {
       console.log(`🌐 Live at: ${result.liveUrl}`);
@@ -5610,7 +5660,7 @@ router.post('/generate', async (req: Request, res: Response) => {
 
     return res.json({
       success: true,
-      engine: 'copilot-sdk-v2',
+      engine: 'cloudflare-ai-v3',
       slug,
       title: result.article!.title,
       wordCount: result.article!.wordCount || 3500,
@@ -5637,7 +5687,7 @@ router.post('/generate', async (req: Request, res: Response) => {
     });
 
   } catch (error: any) {
-    console.error('V2 Generation error:', error);
+    console.error('V3 Generation error:', error);
     return res.status(500).json({ error: error.message || 'Failed to generate article' });
   }
 });
@@ -5699,10 +5749,13 @@ router.get('/activity-log', async (req: Request, res: Response) => {
 
 /**
  * Get sitemap URLs - fetches sitemap.xml and parses URLs for display
+ * Uses current category context for dynamic sitemap URL
  */
 router.get('/sitemap', async (_req: Request, res: Response) => {
   try {
-    const sitemap = await fetchCurrentSitemap();
+    // Get category from current context or default
+    const category = v3CategoryContext?.category || 'petinsurance';
+    const sitemap = await fetchCurrentSitemap(category);
 
     if (!sitemap) {
       return res.json({
@@ -5716,8 +5769,8 @@ router.get('/sitemap', async (_req: Request, res: Response) => {
     const urlMatches = sitemap.match(/<loc>([^<]+)<\/loc>/g) || [];
     const urls = urlMatches.map(match => {
       const url = match.replace(/<\/?loc>/g, '');
-      // Extract slug from URL
-      const slugMatch = url.match(/\/petinsurance\/([^/]+)\/?$/);
+      // Extract slug from URL - use dynamic category pattern
+      const slugMatch = url.match(new RegExp(`\\/${category}\\/([^/]+)\\/?$`));
       const slug = slugMatch ? slugMatch[1] : url;
 
       // Try to extract lastmod if present
@@ -5734,7 +5787,7 @@ router.get('/sitemap', async (_req: Request, res: Response) => {
     res.json({
       urls,
       count: urls.length,
-      source: 'https://catsluvus.com/petinsurance/sitemap.xml',
+      source: `https://catsluvus.com/${category}/sitemap.xml`,
       fetchedAt: new Date().toISOString()
     });
   } catch (error: any) {
@@ -5858,7 +5911,7 @@ router.get('/keywords/random', async (req: Request, res: Response) => {
 // Autonomous mode state - runs continuously at max speed (no interval delay)
 let autonomousRunning = false;
 
-// V2 Research Phase State - must complete before generation can start
+// V3 Research Phase State - must complete before generation can start
 let researchEngine: ResearchEngine | null = null;
 let researchPhaseOutput: ResearchPhaseOutput | null = null;
 let activeCategoryContext: CategoryContext | null = null;
@@ -5985,7 +6038,7 @@ function logSuccess(title: string, slug: string, seoScore: number, wordCount: nu
 }
 
 // ============================================================================
-// V2 RESEARCH PHASE ENDPOINTS
+// V3 RESEARCH PHASE ENDPOINTS
 // Research must complete before generation can start
 // Agent makes ALL strategic decisions - infrastructure executes them
 // ============================================================================
@@ -6950,14 +7003,14 @@ async function generateNextArticleCloudflare() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// V2 AUTONOMOUS RESEARCH & GENERATION
+// V3 AUTONOMOUS RESEARCH & GENERATION
 // Fully autonomous pipeline: Research → CategoryContext → Content Generation
 // ═══════════════════════════════════════════════════════════════════════════
 
-let v2AutonomousRunning = false;
-let v2CategoryContext: CategoryContext | null = null;
+let v3AutonomousRunning = false;
+let v3CategoryContext: CategoryContext | null = null;
 
-async function runV2AutonomousResearch(): Promise<CategoryContext | null> {
+async function runV3AutonomousResearch(): Promise<CategoryContext | null> {
   console.log('[SEO-V3] 🚀 Starting autonomous research phase...');
   addActivityLog('info', '[V3] Starting autonomous research - agent will discover new category');
 
@@ -7032,7 +7085,7 @@ async function runV2AutonomousResearch(): Promise<CategoryContext | null> {
     
     // Build ResearchPhaseOutput
     const researchOutput: ResearchPhaseOutput = {
-      id: `v2-research-${Date.now()}`,
+      id: `v3-research-${Date.now()}`,
       status: 'complete',
       startedAt: new Date().toISOString(),
       completedAt: new Date().toISOString(),
@@ -7112,7 +7165,7 @@ async function runV2AutonomousResearch(): Promise<CategoryContext | null> {
   }
 }
 
-async function generateV2Article(keyword: KeywordData, context: CategoryContext): Promise<boolean> {
+async function generateV3Article(keyword: KeywordData, context: CategoryContext): Promise<boolean> {
   try {
     console.log(`[SEO-V3] 📝 Generating: "${keyword.keyword}"`);
     addActivityLog('generating', `[V3] Generating: "${keyword.keyword}"`, {
@@ -7156,21 +7209,21 @@ Target word count: ${serpAnalysis.targetWordCount}+ words\n`
 
     // 3. Get existing articles for internal linking (BOTH same-category AND cross-category)
     console.log(`[SEO-V3] [Step 3/7] Fetching existing article slugs...`);
-    const v2Slugs = await fetchV2ExistingArticleSlugs(context.kvPrefix);
-    console.log(`[SEO-V3] [Step 3/7] ✓ Found ${v2Slugs.length} same-category articles`);
-    
-    // Fetch cross-category articles (V1 petinsurance + other V2 categories) with full URLs
+    const existingSlugs = await fetchExistingArticleSlugs(context.kvPrefix);
+    console.log(`[SEO-V3] [Step 3/7] ✓ Found ${existingSlugs.length} same-category articles`);
+
+    // Fetch cross-category articles (from V3-exclusive categories) with full URLs
     const crossCategoryUrls = await fetchCrossCategoryArticlesForLinking(context.kvPrefix);
     console.log(`[SEO-V3] [Step 3/7] ✓ Found ${crossCategoryUrls.length} cross-category articles for linking`);
-    
+
     // Combine: same-category slugs (convert to full URLs) + cross-category URLs
     // Normalize basePath to ensure proper URL format: /category/ (with trailing slash)
     let categoryPath = context.basePath || `/${context.kvPrefix.replace(/:$/, '')}/`;
     // Ensure categoryPath ends with exactly one slash
     if (!categoryPath.endsWith('/')) categoryPath += '/';
     if (!categoryPath.startsWith('/')) categoryPath = '/' + categoryPath;
-    
-    const sameCategoryUrls = v2Slugs.slice(0, 20).map(slug => `${categoryPath}${slug}`);
+
+    const sameCategoryUrls = existingSlugs.slice(0, 20).map(slug => `${categoryPath}${slug}`);
     const allArticleUrls = [...sameCategoryUrls, ...crossCategoryUrls.slice(0, 30)];
     const existingArticlesList = allArticleUrls.join('\n');
 
@@ -7434,8 +7487,8 @@ Return ONLY valid JSON:
       console.log(`[SEO-V3] ⚠️ AI image generation skipped: ${err.message}`);
     }
 
-    // 11. Build full HTML with schema markup (use V2-specific template)
-    const html = buildV2ArticleHtml(article, slug, keyword.keyword, context, video, generatedImages, amazonProducts);
+    // 11. Build full HTML with schema markup (use V3-specific template)
+    const html = buildArticleHtml(article, slug, keyword.keyword, context, video, generatedImages, amazonProducts);
 
     // 12. Calculate SEO score
     const seoScore = await calculateSEOScore(html, keyword.keyword, article.title, article.metaDescription);
@@ -7457,9 +7510,9 @@ Return ONLY valid JSON:
       return false;
     }
 
-    // 13. Deploy to KV with V2 prefix (only if SEO score passes threshold)
+    // 13. Deploy to KV with V3 prefix (only if SEO score passes threshold)
     console.log(`[SEO-V3] [Step 6/7] Deploying to Cloudflare KV...`);
-    const derivedSlugForKv = context?.categorySlug || 'v2-articles';
+    const derivedSlugForKv = context?.categorySlug || 'v3-articles';
     const safeKvPrefix = context?.kvPrefix || `${derivedSlugForKv}:`;
     const kvKey = `${safeKvPrefix}${slug}`;
     const cfApiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
@@ -7471,9 +7524,9 @@ Return ONLY valid JSON:
         body: html
       });
       console.log(`[SEO-V3] [Step 6/7] ✓ Deployed: ${kvKey}`);
-      
-      const v2Category = safeKvPrefix.replace(':', '').replace(/-/g, '-') || 'cat-trees-condos';
-      registerArticleForLinking(slug, v2Category);
+
+      const v3Category = safeKvPrefix.replace(':', '').replace(/-/g, '-') || 'cat-trees-condos';
+      registerArticleForLinking(slug, v3Category);
       
       // Notify IndexNow for instant indexing
       const articleUrl = `https://${context.domain}${context.basePath}/${slug}`;
@@ -7543,13 +7596,13 @@ Return ONLY valid JSON:
       console.log(`[SEO-V3] [Step 6/7] ⚠️ No Cloudflare API token - skipping deployment`);
     }
 
-    // 14. Update V2 sitemap
+    // 14. Update V3 sitemap
     console.log(`[SEO-V3] [Step 7/7] Updating sitemap...`);
-    await updateV2Sitemap(slug, context);
+    await updateSitemap(slug, context);
     console.log(`[SEO-V3] [Step 7/7] ✓ Sitemap updated`);
 
     const safeDomain = context?.domain || 'catsluvus.com';
-    const derivedSlugForUrl = context?.categorySlug || 'v2-articles';
+    const derivedSlugForUrl = context?.categorySlug || 'v3-articles';
     const safeBasePath = context?.basePath || `/${derivedSlugForUrl}`;
     const safeKvPrefixForOptimize = context?.kvPrefix || `${derivedSlugForUrl}:`;
     const articleUrl = `https://${safeDomain}${safeBasePath}/${slug}`;
@@ -7599,8 +7652,8 @@ async function getAllCategoryStatusKeys(): Promise<string[]> {
   }
 }
 
-async function runV2AutonomousGeneration() {
-  if (!v2CategoryContext) {
+async function runV3AutonomousGeneration() {
+  if (!v3CategoryContext) {
     console.log('[SEO-V3] 🔍 No active context - checking for in-progress categories...');
     
     // Step 1: Dynamically query KV for all category statuses (no hardcoded list)
@@ -7632,12 +7685,12 @@ async function runV2AutonomousGeneration() {
       if (saved.categoryContext && saved.categoryContext.keywords?.length > 0) {
         const pendingCount = saved.categoryContext.keywords.filter(k => k.status === 'pending').length;
         console.log(`[SEO-V3] ✅ Loaded ${saved.categoryContext.niche}: ${pendingCount}/${saved.categoryContext.keywords.length} pending`);
-        v2CategoryContext = saved.categoryContext;
+        v3CategoryContext = saved.categoryContext;
         
         // CRITICAL FIX: Sync categoryName with niche to fix breadcrumbs
-        if (v2CategoryContext.niche && v2CategoryContext.categoryName !== v2CategoryContext.niche) {
-          console.log(`[SEO-V3] 🔧 Syncing categoryName: "${v2CategoryContext.categoryName}" → "${v2CategoryContext.niche}"`);
-          v2CategoryContext.categoryName = v2CategoryContext.niche;
+        if (v3CategoryContext.niche && v3CategoryContext.categoryName !== v3CategoryContext.niche) {
+          console.log(`[SEO-V3] 🔧 Syncing categoryName: "${v3CategoryContext.categoryName}" → "${v3CategoryContext.niche}"`);
+          v3CategoryContext.categoryName = v3CategoryContext.niche;
         }
         
         // Ensure Worker Route
@@ -7649,7 +7702,7 @@ async function runV2AutonomousGeneration() {
     }
     
     // Step 2: If no in-progress category, discover next one
-    if (!foundInProgress || !v2CategoryContext) {
+    if (!foundInProgress || !v3CategoryContext) {
       console.log('[SEO-V3] 🔄 No in-progress category found - calling discoverNextCategory()...');
       addActivityLog('info', '[V3] Starting category discovery...');
       
@@ -7670,8 +7723,8 @@ async function runV2AutonomousGeneration() {
           console.log(`[SEO-V3] Generated ${keywords.length} keywords for ${nextCategory.name}`);
           
           if (keywords.length >= 5) {
-            // Create new v2CategoryContext
-            v2CategoryContext = {
+            // Create new v3CategoryContext
+            v3CategoryContext = {
               category: nextCategory.slug,
               niche: nextCategory.name,
               domain: 'catsluvus.com',
@@ -7701,9 +7754,9 @@ async function runV2AutonomousGeneration() {
             await saveResearchToKV({ 
               researchPhase: 'generation', 
               selectedNiche: nextCategory.name, 
-              keywords: v2CategoryContext.keywords,
-              startedAt: v2CategoryContext.startedAt
-            } as any, v2CategoryContext);
+              keywords: v3CategoryContext.keywords,
+              startedAt: v3CategoryContext.startedAt
+            } as any, v3CategoryContext);
             
             addActivityLog('success', `[V3] Started category: ${nextCategory.name} (${keywords.length} keywords)`);
             console.log(`[SEO-V3] 🚀 STARTING: ${nextCategory.name} with ${keywords.length} keywords`);
@@ -7711,51 +7764,51 @@ async function runV2AutonomousGeneration() {
             console.log(`[SEO-V3] ⚠️ Only ${keywords.length} keywords for ${nextCategory.name}, need at least 5`);
             addActivityLog('warning', `[V3] Insufficient keywords for ${nextCategory.name}: ${keywords.length}`);
             console.log('[SEO-V3] Will retry in 5 minutes...');
-            setTimeout(runV2AutonomousGeneration, 300000);
+            setTimeout(runV3AutonomousGeneration, 300000);
             return;
           }
         } else {
           console.log('[SEO-V3] ❌ No categories available to discover');
           addActivityLog('info', '[V3] All categories exhausted - V3 autonomous stopped');
-          v2AutonomousRunning = false;
+          v3AutonomousRunning = false;
           return;
         }
       } catch (error: any) {
         console.error(`[SEO-V3] ❌ Discovery failed: ${error.message}`);
         addActivityLog('error', `[V3] Discovery failed: ${error.message}`);
         console.log('[SEO-V3] Will retry in 5 minutes...');
-        setTimeout(runV2AutonomousGeneration, 300000);
+        setTimeout(runV3AutonomousGeneration, 300000);
         return;
       }
     }
   }
 
-  const pendingKeywords = v2CategoryContext.keywords.filter(k => k.status === 'pending');
-  const totalKeywords = v2CategoryContext.keywords.length;
+  const pendingKeywords = v3CategoryContext.keywords.filter(k => k.status === 'pending');
+  const totalKeywords = v3CategoryContext.keywords.length;
   const completedKeywords = totalKeywords - pendingKeywords.length;
   const completionPct = ((completedKeywords / totalKeywords) * 100).toFixed(1);
   
   if (pendingKeywords.length === 0) {
-    const currentNiche = v2CategoryContext.niche || v2CategoryContext.category || 'unknown';
+    const currentNiche = v3CategoryContext.niche || v3CategoryContext.category || 'unknown';
     console.log(`[SEO-V3] ✅ Niche "${currentNiche}" 100% complete! (${totalKeywords} articles)`);
     addActivityLog('success', `[V3] Niche complete: ${currentNiche} (${totalKeywords} articles)`);
     
     // Mark niche as complete in KV to prevent re-discovery on restart
-    await saveResearchToKV({ researchPhase: 'niche_complete', selectedNiche: currentNiche, keywords: v2CategoryContext.keywords, completedAt: new Date().toISOString() } as any, v2CategoryContext);
+    await saveResearchToKV({ researchPhase: 'niche_complete', selectedNiche: currentNiche, keywords: v3CategoryContext.keywords, completedAt: new Date().toISOString() } as any, v3CategoryContext);
     
     // Also save to category status system
-    await saveCategoryStatus(v2CategoryContext.category || keywordToSlug(currentNiche), {
-      category: v2CategoryContext.category || keywordToSlug(currentNiche),
+    await saveCategoryStatus(v3CategoryContext.category || keywordToSlug(currentNiche), {
+      category: v3CategoryContext.category || keywordToSlug(currentNiche),
       status: 'completed',
       articleCount: totalKeywords,
       expectedCount: totalKeywords,
       avgSeoScore: 85,
-      startedAt: v2CategoryContext.startedAt || new Date().toISOString(),
+      startedAt: v3CategoryContext.startedAt || new Date().toISOString(),
       completedAt: new Date().toISOString()
     });
     
-    // V2 AUTONOMOUS: Discover and start next category
-    if (v2AutonomousRunning) {
+    // V3 AUTONOMOUS: Discover and start next category from exclusive list
+    if (v3AutonomousRunning) {
       addActivityLog('info', '[V3] Discovering next high-CPC category...');
       
       try {
@@ -7771,8 +7824,8 @@ async function runV2AutonomousGeneration() {
           const keywords = await generateCategoryKeywords(nextCategory);
           
           if (keywords.length >= 5) {
-            // Create new v2CategoryContext
-            v2CategoryContext = {
+            // Create new v3CategoryContext
+            v3CategoryContext = {
               category: nextCategory.slug,
               niche: nextCategory.name,
               domain: 'catsluvus.com',
@@ -7801,7 +7854,7 @@ async function runV2AutonomousGeneration() {
             addActivityLog('success', `[V3] Started new category: ${nextCategory.name} (${keywords.length} keywords)`);
             
             // Continue autonomous generation with new category
-            setImmediate(runV2AutonomousGeneration);
+            setImmediate(runV3AutonomousGeneration);
             return;
           } else {
             addActivityLog('warning', `[V3] Only ${keywords.length} keywords for ${nextCategory.name}, skipping`);
@@ -7815,7 +7868,7 @@ async function runV2AutonomousGeneration() {
     }
     
     // Clear context - no more work
-    v2CategoryContext = null;
+    v3CategoryContext = null;
     return;
   }
 
@@ -7833,22 +7886,22 @@ async function runV2AutonomousGeneration() {
   const nextKeyword = sortedPending[0];
   console.log(`[SEO-V3] 📊 Niche Progress: ${completedKeywords}/${totalKeywords} (${completionPct}%) | Next: [${nextKeyword.priority?.toUpperCase()}] "${nextKeyword.keyword}"`);
   
-  await generateV2Article(nextKeyword, v2CategoryContext);
+  await generateV3Article(nextKeyword, v3CategoryContext);
   nextKeyword.status = 'published';
   
   // Save progress to KV after each article (using 'in_progress' status to distinguish from complete)
-  await saveResearchToKV({ researchPhase: 'generation_in_progress', selectedNiche: v2CategoryContext.niche, keywords: v2CategoryContext.keywords } as any, v2CategoryContext);
+  await saveResearchToKV({ researchPhase: 'generation_in_progress', selectedNiche: v3CategoryContext.niche, keywords: v3CategoryContext.keywords } as any, v3CategoryContext);
 
   // Continue with next article
-  if (v2AutonomousRunning) {
-    setImmediate(runV2AutonomousGeneration);
+  if (v3AutonomousRunning) {
+    setImmediate(runV3AutonomousGeneration);
   }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// NOTE: V1 Pet Insurance generation now runs independently in seo-generator.ts
-// V2 only handles dynamic category discovery and generation (cat-dna-testing, etc.)
-// V2's own auto-start is below (v2AutonomousRunning with 15s delay)
+// NOTE: V1 Pet Insurance generation runs independently in seo-generator.ts
+// V3 handles dynamic category discovery with Cloudflare AI generation
+// V3's own auto-start is below (v3AutonomousRunning with 15s delay)
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -8161,10 +8214,10 @@ router.post('/pagespeed/batch', async (req: Request, res: Response) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// V2 AUTO-START (New Category Discovery - autonomous research + generation)
+// V3 AUTO-START (New Category Discovery - autonomous research + generation)
 // ═══════════════════════════════════════════════════════════════════════════
-// NOTE: V2 ONLY auto-starts the research pipeline that discovers NEW categories
-// (cat-dna-testing, cat-water-fountains, etc.) - NOT the petinsurance queue.
+// NOTE: V3 auto-starts the research pipeline that discovers NEW categories
+// Uses Cloudflare AI for content generation (independent from V2's Copilot CLI)
 // The petinsurance queue is handled by V1 (seo-generator.ts).
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -8173,11 +8226,11 @@ console.log('[SEO-V3] Module loaded - scheduling V3 research pipeline auto-start
 // Auto-start V3 research pipeline (discovers new categories, NOT petinsurance)
 setTimeout(() => {
   console.log('[SEO-V3] setTimeout triggered for V3 research pipeline...');
-  if (!v2AutonomousRunning) {
+  if (!v3AutonomousRunning) {
     console.log('[SEO-V3] 🔬 Auto-starting V3 autonomous research pipeline...');
-    v2AutonomousRunning = true;
+    v3AutonomousRunning = true;
     addActivityLog('info', '[V3] Auto-starting autonomous research & generation pipeline (new category discovery)');
-    runV2AutonomousGeneration();
+    runV3AutonomousGeneration();
   } else {
     console.log('[SEO-V3] V3 research pipeline already running, skipping auto-start');
   }
