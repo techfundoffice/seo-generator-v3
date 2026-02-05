@@ -2962,6 +2962,8 @@ interface ArticleData {
   title: string;
   metaDescription: string;
   quickAnswer?: string;
+  definitionSnippet?: string;  // AEO: Clear definition for featured snippets & AI citation
+  keyFacts?: string[];          // GEO: Specific facts/stats for AI to cite
   keyTakeaways?: string[];
   introduction: string;
   sections: Array<{ heading: string; content: string; subsections?: Array<{ heading: string; content: string }> }>;
@@ -3276,6 +3278,30 @@ ${provider.cons.map(con => `<li>${con}</li>`).join('\n')}
     ]
   };
 
+  // AEO/GEO: DefinedTerm schema for AI citation and featured snippets
+  const definitionSchema = article.definitionSnippet ? {
+    "@context": "https://schema.org",
+    "@type": "DefinedTerm",
+    "@id": `${pageUrl}#definition`,
+    "name": keyword,
+    "description": article.definitionSnippet,
+    "inDefinedTermSet": {
+      "@type": "DefinedTermSet",
+      "name": `${categoryName} Glossary`
+    }
+  } : null;
+
+  // GEO: Speakable schema for voice search and AI assistants
+  const speakableSchema = {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    "@id": `${pageUrl}#speakable`,
+    "speakable": {
+      "@type": "SpeakableSpecification",
+      "cssSelector": [".quick-answer", ".key-takeaways", ".definition-box", ".key-facts"]
+    }
+  };
+
   // Combined graph for better entity relationships
   // ItemList schema for comparison table (helps with Featured Snippets for "best X" queries)
   // Uses Service type instead of Product with fake pricing for better schema accuracy
@@ -3337,7 +3363,9 @@ ${provider.cons.map(con => `<li>${con}</li>`).join('\n')}
       webPageSchema,
       articleSchema,
       breadcrumbSchema,
+      speakableSchema,
       ...(article.faqs && article.faqs.length > 0 ? [faqSchema] : []),
+      ...(definitionSchema ? [definitionSchema] : []),
       ...(comparisonListSchema ? [comparisonListSchema] : []),
       ...(videoSchema ? [videoSchema] : [])
     ]
@@ -3469,6 +3497,19 @@ article *{max-width:100%}
 .key-takeaways h2{font-size:1.2rem;margin:0 0 15px 0;color:var(--wc-color-primary)}
 .key-takeaways ul{margin:0;padding-left:20px}
 .key-takeaways li{margin:8px 0;line-height:1.6}
+
+/* AEO: Definition Box - For Featured Snippets & AI Citation */
+.definition-box{background:linear-gradient(135deg,#f0f4ff 0%,#e8ecff 100%);border:1px solid #c7d2fe;border-radius:8px;padding:16px 20px;margin:20px 0;font-size:1.05em;line-height:1.7}
+.definition-box strong{color:#4338ca;margin-right:8px}
+.definition-box p{margin:0}
+
+/* GEO: Key Facts - For AI Search Engine Citation */
+.key-facts{background:linear-gradient(135deg,#fef3c7 0%,#fde68a 100%);border-left:4px solid #f59e0b;padding:16px 20px;border-radius:0 8px 8px 0;margin:20px 0}
+.key-facts h3{font-size:1rem;margin:0 0 12px 0;color:#92400e;display:flex;align-items:center;gap:8px}
+.key-facts h3::before{content:"📊";font-size:1.1em}
+.key-facts ul{margin:0;padding-left:20px;list-style-type:none}
+.key-facts li{margin:6px 0;line-height:1.6;position:relative;padding-left:20px}
+.key-facts li::before{content:"✓";position:absolute;left:0;color:#059669;font-weight:bold}
 
 /* Tables - Responsive with horizontal scroll */
 .table-wrapper{overflow-x:auto;margin:20px 0;-webkit-overflow-scrolling:touch;max-width:100%}
@@ -3677,6 +3718,13 @@ ${video ? `
 <strong>Quick Answer:</strong> ${article.quickAnswer || `The ${keyword} options include Lemonade ($15-40/month), Healthy Paws, and Trupanion. Compare plans with 70-90% reimbursement, $100-500 deductibles, and coverage for accidents, illnesses, and preventive care.`}
 </div>
 
+${article.definitionSnippet ? `
+<div class="definition-box" itemscope itemtype="https://schema.org/DefinedTerm">
+<meta itemprop="name" content="${keyword}">
+<p itemprop="description"><strong>Definition:</strong> ${article.definitionSnippet}</p>
+</div>
+` : ''}
+
 <div class="key-takeaways">
 <h2>Key Takeaways</h2>
 <ul>
@@ -3688,6 +3736,15 @@ ${article.keyTakeaways?.map((takeaway: string) => `<li>${takeaway}</li>`).join('
 `}
 </ul>
 </div>
+
+${article.keyFacts && article.keyFacts.length > 0 ? `
+<div class="key-facts" itemscope itemtype="https://schema.org/ItemList">
+<h3 itemprop="name">Key Facts</h3>
+<ul itemprop="itemListElement">
+${article.keyFacts.map((fact: string, index: number) => `<li itemprop="name" data-position="${index + 1}">${fact}</li>`).join('\n')}
+</ul>
+</div>
+` : ''}
 
 <div class="introduction article-intro" itemprop="articleBody">
 ${linkedIntro}
@@ -7363,6 +7420,23 @@ STRICT SEO REQUIREMENTS FOR 100/100 SCORE (CRITICAL):
 
 **LINKS: 8-12 internal links (REQUIRED in internalLinks array) + 2-3 external authority links**
 
+AEO (ANSWER ENGINE OPTIMIZATION) - For Featured Snippets & Voice Search:
+- **Quick Answer Box**: First 40-60 words MUST directly answer the main query (appears in "quickAnswer")
+- **Definition Pattern**: Start key sections with "X is..." or "X refers to..." for definition snippets
+- **List Snippets**: Use numbered steps for "how to" content, bullet points for "best X" content
+- **Table Snippets**: Comparison tables trigger rich snippets - include clear headers and data
+- **FAQ Optimization**: Each FAQ answer should start with a direct 1-sentence answer, then expand
+- **Voice Search Ready**: Write answers that sound natural when read aloud by voice assistants
+
+GEO (GENERATIVE ENGINE OPTIMIZATION) - For AI Search Engines (ChatGPT, Perplexity, Claude):
+- **Entity Definitions**: Clearly define key terms so AI can cite you: "A [term] is [definition]..."
+- **Factual Statements**: Include specific facts, statistics, and data points AI can reference
+- **Source Attribution**: Mention studies, experts, and authoritative sources by name
+- **E-E-A-T Signals**: Include author expertise, first-hand experience, and trust indicators
+- **Structured Knowledge**: Use consistent formatting so AI can extract structured information
+- **Citation-Worthy Content**: Write statements that AI would want to cite as a source
+- **Semantic Clarity**: Avoid ambiguity - be precise about what, who, when, where, why, how
+
 AI WRITING DETECTION AVOIDANCE:
 - NEVER use em dashes (—). Use commas, colons, or parentheses.
 - AVOID: delve, leverage, utilize, foster, bolster, underscore, unveil, navigate, streamline, enhance
@@ -7375,7 +7449,13 @@ Return ONLY valid JSON:
 {
   "title": "[CONCISE, ≤55 chars, no truncation] Punchy title with '${keyword.keyword}'",
   "metaDescription": "[MAX 155 CHARS] Description with '${keyword.keyword}'",
-  "quickAnswer": "40-60 word direct answer for Featured Snippet Position 0",
+  "quickAnswer": "40-60 word direct answer for Featured Snippet Position 0 - START with the answer, not context",
+  "definitionSnippet": "One clear sentence: '[Topic] is/refers to [definition]...' for AI citation and definition snippets",
+  "keyFacts": [
+    "Specific fact 1 with number/statistic that AI can cite",
+    "Specific fact 2 with data point or research finding",
+    "Specific fact 3 with expert consensus or study result"
+  ],
   "keyTakeaways": ["5 key points, 15-25 words each"],
   "images": [
     ${categoryImageExamples}
