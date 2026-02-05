@@ -985,6 +985,56 @@ For CAT FOOD DELIVERY, popular brands include: Smalls, Nom Nom, Ollie, The Farme
 Example product format: "Smalls Fresh Cat Food Subscription - Chicken Recipe" with price ~$2-5/day
 Consider: fresh vs freeze-dried, subscription frequency, customization, ingredients.`,
 
+    'cat-toys-interactive': `
+For INTERACTIVE CAT TOYS, popular brands include: Kong, Catit, SmartyKat, Petstages, PetFusion, Frisco, Potaroma, BENTOPAL.
+Example product format: "Catit Senses 2.0 Digger Interactive Cat Toy" with price ~$15-30
+Consider: electronic toys, laser toys, feather wands, puzzle toys, ball tracks, motion-activated toys.`,
+
+    'cat-grooming-tools': `
+For CAT GROOMING TOOLS, popular brands include: Furminator, Hertzko, Safari, Chris Christensen, JW Pet, Li'l Pals, Burt's Bees, Wahl.
+Example product format: "Furminator Undercoat Deshedding Tool for Cats" with price ~$20-35
+Consider: deshedding tools, slicker brushes, nail clippers, grooming gloves, dematting combs, bathing supplies.`,
+
+    'cat-travel-accessories': `
+For CAT TRAVEL ACCESSORIES, popular brands include: Sleepypod, Sturdibag, Pet Gear, Sherpa, Catit, MidWest, petisfam, Lil Back Bracer.
+Example product format: "Sleepypod Mobile Pet Bed & Carrier" with price ~$100-200
+Consider: carriers, car seats, travel litter boxes, harnesses, water bottles, portable bowls, anxiety wraps.`,
+
+    'cat-training-products': `
+For CAT TRAINING PRODUCTS, popular brands include: PetSafe, SSSCat, Karen Pryor, Catit, SmartCat, Downtown Pet Supply, Frisco.
+Example product format: "PetSafe SSSCAT Motion-Activated Spray Deterrent" with price ~$20-40
+Consider: clicker trainers, deterrent sprays, scratching post trainers, treat dispensers, training pads.`,
+
+    'cat-senior-care': `
+For CAT SENIOR CARE, popular brands include: Cosequin, Feliway, PetFusion, K&H Pet Products, Purina Pro Plan, Hill's Science Diet, VetriScience.
+Example product format: "Cosequin Joint Health Supplement for Cats" with price ~$15-30
+Consider: joint supplements, heated beds, orthopedic beds, senior food, water fountains, ramps, calming aids.`,
+
+    'cat-dental-care': `
+For CAT DENTAL CARE, popular brands include: Virbac, Greenies, TropiClean, Oxyfresh, Petsmile, Arm & Hammer, Vet's Best.
+Example product format: "Virbac C.E.T. Enzymatic Cat Toothpaste" with price ~$10-20
+Consider: toothpaste, toothbrushes, dental treats, water additives, dental wipes, plaque removers.`,
+
+    'cat-outdoor-enclosures': `
+For CAT OUTDOOR ENCLOSURES, popular brands include: Outback Jack, Kittywalk, PawHut, Aivituvin, COZIWOW, Petmate, Prevue Pet.
+Example product format: "Kittywalk Penthouse Outdoor Cat Enclosure" with price ~$100-300
+Consider: catios, window box enclosures, tunnel systems, portable playpens, DIY kits, weatherproof enclosures.`,
+
+    'cat-puzzle-feeders': `
+For CAT PUZZLE FEEDERS, popular brands include: Catit Senses, Trixie, Doc & Phoebe, LickiMat, Nina Ottosson, PetSafe, Frisco.
+Example product format: "Trixie 5-in-1 Activity Center for Cats" with price ~$15-35
+Consider: slow feeders, food puzzles, treat dispensers, lick mats, snuffle mats, foraging toys.`,
+
+    'cat-calming-products': `
+For CAT CALMING PRODUCTS, popular brands include: Feliway, ThunderEase, Pet Naturals, Zesty Paws, NaturVet, Comfort Zone, Rescue Remedy.
+Example product format: "Feliway Classic Calming Diffuser Kit" with price ~$20-40
+Consider: pheromone diffusers, calming collars, anxiety treats, calming sprays, supplements, thunder shirts.`,
+
+    'cat-subscription-boxes': `
+For CAT SUBSCRIPTION BOXES, popular brands include: KitNipBox, meowbox, CatLadyBox, Rescue Box, The Catnip Times, PetGiftBox.
+Example product format: "KitNipBox Happy Cat Monthly Subscription" with price ~$20-35/month
+Consider: toy boxes, treat boxes, themed boxes, multi-cat options, eco-friendly boxes, luxury boxes.`,
+
     'DEFAULT': `
 For "${keyword}", think of the TOP 5 most popular products sold on Amazon for this category.
 Use your knowledge of real brands and products that cat owners actually buy.
@@ -2226,7 +2276,7 @@ function buildArticleHtml(
       const sectionImageHtml = sectionImage ? buildImageHtml(sectionImage) : '';
 
       return `
-        <section>
+        <section id="section-${index + 1}">
           <h2>${section.heading}</h2>
           ${sectionImageHtml}
           ${section.content}
@@ -2235,11 +2285,28 @@ function buildArticleHtml(
     }).join('');
   }
 
+  // Build Table of Contents from sections
+  let tocHtml = '';
+  if (article.sections && article.sections.length > 1) {
+    const tocItems = article.sections.map((section, index) =>
+      `<li><a href="#section-${index + 1}">${section.heading}</a></li>`
+    ).join('');
+    tocHtml = `
+      <nav class="toc" aria-label="Table of Contents">
+        <strong>In This Article</strong>
+        <ol>
+          ${tocItems}
+          ${article.faqs && article.faqs.length > 0 ? '<li><a href="#faq-section">Frequently Asked Questions</a></li>' : ''}
+        </ol>
+      </nav>
+    `;
+  }
+
   // Build FAQ HTML
   let faqHtml = '';
   if (article.faqs && article.faqs.length > 0) {
     faqHtml = `
-      <section class="faqs">
+      <section class="faqs" id="faq-section">
         <h2>Frequently Asked Questions About ${keyword}</h2>
         ${article.faqs.map(faq => `
           <div class="faq-item">
@@ -2270,6 +2337,23 @@ function buildArticleHtml(
 
   const currentYear = new Date().getFullYear();
 
+  // Build related articles section
+  const categorySlugForRelated = context?.categorySlug || '';
+  const relatedItems = getRelatedArticles(slug, categorySlugForRelated, 6);
+  let relatedArticlesHtml = '';
+  if (relatedItems.length > 0) {
+    const relatedCards = relatedItems.map(item => {
+      const articleUrl = `https://${safeDomain}/${item.category}/${item.slug}`;
+      return `<a href="${articleUrl}" class="related-card"><span class="related-category">${item.category.replace(/-/g, ' ').toUpperCase()}</span><span class="related-title">${item.anchorText}</span></a>`;
+    }).join('');
+    relatedArticlesHtml = `
+      <section class="related-articles">
+        <h2>You Might Also Like</h2>
+        <div class="related-grid">${relatedCards}</div>
+      </section>
+    `;
+  }
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2280,11 +2364,20 @@ function buildArticleHtml(
 <title>${article.title}</title>
 <meta name="description" content="${article.metaDescription}">
 <link rel="canonical" href="${canonicalUrl}">
+<link rel="icon" href="https://${safeDomain}/favicon.ico" type="image/x-icon">
+<link rel="apple-touch-icon" href="https://${safeDomain}/apple-touch-icon.png">
 <meta property="og:title" content="${article.title}">
 <meta property="og:description" content="${article.metaDescription}">
 <meta property="og:url" content="${canonicalUrl}">
 <meta property="og:type" content="article">
+<meta property="og:image" content="${heroImage?.url || `https://${safeDomain}/img${safeBasePath}/${slug}/hero.png`}">
+<meta property="og:image:width" content="1024">
+<meta property="og:image:height" content="768">
+<meta property="og:site_name" content="${safeSiteName}">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${article.title}">
+<meta name="twitter:description" content="${article.metaDescription}">
+<meta name="twitter:image" content="${heroImage?.url || `https://${safeDomain}/img${safeBasePath}/${slug}/hero.png`}">
 <script type="application/ld+json">${JSON.stringify(articleSchema)}</script>
 <script type="application/ld+json">${JSON.stringify(breadcrumbSchema)}</script>
 ${faqSchema ? `<script type="application/ld+json">${JSON.stringify(faqSchema)}</script>` : ''}
@@ -2448,6 +2541,23 @@ article *{max-width:100%}
   *,*::before,*::after{animation-duration:0.01ms !important;transition-duration:0.01ms !important}
 }
 
+/* Table of Contents */
+.toc{background:#f8f9fa;border:1px solid #e2e8f0;border-radius:8px;padding:20px 24px;margin:24px 0}
+.toc strong{display:block;font-size:1.1em;margin-bottom:12px;color:var(--wc-color-primary-dark)}
+.toc ol{margin:0;padding-left:20px}
+.toc li{margin-bottom:6px;line-height:1.5}
+.toc a{color:var(--wc-color-primary);text-decoration:none;border-bottom:1px dotted var(--wc-color-primary)}
+.toc a:hover{color:var(--wc-color-primary-dark);border-bottom-style:solid}
+
+/* Related Articles */
+.related-articles{margin-top:48px;padding-top:32px;border-top:2px solid #e2e8f0}
+.related-articles h2{margin-bottom:20px}
+.related-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:16px}
+.related-card{display:flex;flex-direction:column;padding:16px;background:#f8f9fa;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;transition:box-shadow .2s,transform .2s}
+.related-card:hover{box-shadow:0 4px 12px rgba(0,0,0,.1);transform:translateY(-2px)}
+.related-category{font-size:.7em;font-weight:600;letter-spacing:.05em;color:var(--wc-color-primary);margin-bottom:8px}
+.related-title{font-size:.95em;color:var(--wc-color-text);font-weight:500;line-height:1.4}
+
 /* Print - hide chrome elements injected by Worker */
 @media print{
   .hamburger-menu,.nav-menu,.universal-footer,.skip-link{display:none !important}
@@ -2506,6 +2616,8 @@ article *{max-width:100%}
     </div>
   ` : ''}
 
+  ${tocHtml}
+
   ${heroImageHtml}
 
   <div class="introduction" itemprop="articleBody">
@@ -2522,6 +2634,8 @@ article *{max-width:100%}
     <h2>Conclusion</h2>
     ${article.conclusion || ''}
   </section>
+
+  ${relatedArticlesHtml}
 </article>
 </div>
 </main>
@@ -7062,17 +7176,19 @@ Return ONLY valid JSON:
           }
         }
 
-        // Final fallback: generic table structure
+        // Final fallback: generic table structure using keyword for context
         if (!article.comparisonTable) {
+          const kw = keyword.keyword.replace(/^best\s+/i, '').replace(/\s+\d{4}$/, '').trim();
+          const capKw = kw.charAt(0).toUpperCase() + kw.slice(1);
           article.comparisonTable = {
             headers: ['Product', 'Price Range', 'Best For', 'Rating'],
             rows: [
-              ['Premium Option', '$50-100', 'Quality seekers', '4.8/5'],
-              ['Mid-Range Pick', '$25-50', 'Best value', '4.5/5'],
-              ['Budget Choice', '$15-25', 'Budget conscious', '4.2/5']
+              [`Best ${capKw} - Premium Pick`, '$50-100', 'Top rated quality', '4.8/5'],
+              [`Best ${capKw} - Mid Range`, '$25-50', 'Best value pick', '4.5/5'],
+              [`Best ${capKw} - Budget Friendly`, '$15-25', 'Budget conscious', '4.2/5']
             ]
           };
-          console.log(`[SEO-V3] ✓ Using generic comparison table (no specific products)`);
+          console.log(`[SEO-V3] ✓ Using generic comparison table with keyword "${kw}"`);
         }
       }
     }
