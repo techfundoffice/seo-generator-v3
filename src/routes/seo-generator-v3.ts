@@ -7,6 +7,8 @@ import { generateWithCloudflareAI, isCloudflareAIConfigured } from '../services/
 import { getOnPageScoreWithRetry, categorizeSEOIssues } from '../services/dataforseo-client';
 import { generateArticleImages, getImageQuotaStatus, GeneratedImage } from '../services/cloudflare-image-gen';
 import { SeoCheck } from 'seord';
+// V3: Indexing Tracker Integration (autonomous index verification)
+import { initIndexTracker, trackNewArticle, processIndexQueue, getIndexStatus, forceRecheck, initKVConfig, cleanupOldItems } from '../services/indexing-tracker';
 // V3: Skill Engine Integration
 import { SkillEngine, fullAudit } from '../services/skill-engine';
 import { ResearchEngine, createResearchEngine, ResearchPhaseStatus } from '../services/research-engine';
@@ -40,6 +42,7 @@ import {
   PrioritizedKeyword
 } from '../data/keyword-priorities';
 import { searchAmazonProducts, AMAZON_TAG } from '../services/amazon-products';
+import { searchProductsViaApify, isApifyAvailable } from '../services/apify-amazon';
 
 // Lazy-load google-search-console to avoid 20+ second startup delay from googleapis
 let gscModule: any = null;
@@ -865,62 +868,49 @@ async function fetchAmazonProductsForKeyword(keyword: string, category: string =
     promptText: ''
   };
 
-  try {
-    console.log(`[Amazon] Fetching products for: "${keyword}"`);
-    const result = await searchAmazonProducts(keyword, category, 5);
-
-    if (!result.products || result.products.length === 0) {
-      console.log(`[Amazon] No products found for: "${keyword}"`);
-      return emptyResult;
-    }
-
-    console.log(`[Amazon] Found ${result.products.length} products`);
-
-    const products = result.products.map(p => ({
+  // Helper: convert raw product list to AmazonProductData format
+  function formatProductData(rawProducts: Array<{
+    title: string; price: string; priceValue?: number; asin: string;
+    detailPageUrl?: string; url?: string; rating?: number; features?: string[];
+  }>): AmazonProductData {
+    const products = rawProducts.map(p => ({
       name: p.title.length > 60 ? p.title.substring(0, 57) + '...' : p.title,
       price: p.price,
-      priceValue: p.priceValue,
+      priceValue: p.priceValue || 0,
       asin: p.asin,
-      url: p.detailPageUrl,
+      url: p.detailPageUrl || p.url || `https://www.amazon.com/dp/${p.asin}?tag=${AMAZON_TAG}`,
       rating: p.rating ? `${p.rating}/5` : '4.5/5',
       features: p.features?.slice(0, 2).join('; ') || 'Premium quality',
       amazonSearch: p.title.replace(/[^a-zA-Z0-9\s]/g, '').split(' ').slice(0, 5).join('+')
     }));
 
-    // Format for comparison table rows
     const comparisonRows = products.map(p => [
-      p.name,
-      p.price,
-      p.features,
-      p.rating,
-      p.amazonSearch
+      p.name, p.price, p.features, p.rating, p.amazonSearch
     ]);
 
-    // Format for product schema with real Amazon URLs
     const productSchemaItems = products.map((p, index) => ({
-      "@type": "ListItem",
+      "@type": "ListItem" as const,
       "position": index + 1,
       "item": {
-        "@type": "Product",
+        "@type": "Product" as const,
         "name": p.name,
         "description": `${p.name} - ${p.features}`,
         "sku": p.asin,
         "offers": {
-          "@type": "Offer",
+          "@type": "Offer" as const,
           "price": p.priceValue.toString(),
           "priceCurrency": "USD",
           "availability": "https://schema.org/InStock",
           "url": p.url
         },
         "aggregateRating": p.rating ? {
-          "@type": "AggregateRating",
+          "@type": "AggregateRating" as const,
           "ratingValue": p.rating.replace('/5', ''),
           "bestRating": "5"
         } : undefined
       }
     }));
 
-    // Format for AI prompt
     const promptText = `
 REAL AMAZON PRODUCTS (USE THESE EXACT PRODUCTS IN YOUR COMPARISON TABLE):
 ${products.map((p, i) => `${i + 1}. "${p.name}" - ${p.price} - ASIN: ${p.asin}
@@ -931,16 +921,51 @@ ${products.map((p, i) => `${i + 1}. "${p.name}" - ${p.price} - ASIN: ${p.asin}
 IMPORTANT: Use these EXACT product names and prices in your comparisonTable. Do NOT make up products.
 `;
 
-    return {
-      products,
-      comparisonRows,
-      productSchemaItems,
-      promptText
-    };
-  } catch (error: any) {
-    console.error(`[Amazon] Error fetching products: ${error.message}`);
-    return emptyResult;
+    return { products, comparisonRows, productSchemaItems, promptText };
   }
+
+  // Tier 1: Amazon Creators API
+  try {
+    console.log(`[Amazon] Tier 1: Fetching products for: "${keyword}"`);
+    const result = await searchAmazonProducts(keyword, category, 5);
+
+    if (result.products && result.products.length > 0) {
+      console.log(`[Amazon] Tier 1: Found ${result.products.length} products`);
+      return formatProductData(result.products);
+    }
+    console.log(`[Amazon] Tier 1: No products found for: "${keyword}"`);
+  } catch (error: any) {
+    console.warn(`[Amazon] Tier 1 failed: ${error.message}`);
+  }
+
+  // Tier 2: Apify Amazon Crawler fallback
+  if (isApifyAvailable()) {
+    try {
+      console.log(`[Amazon] Tier 2: Trying Apify fallback for: "${keyword}"`);
+      const apifyProducts = await searchProductsViaApify(keyword, 5);
+
+      if (apifyProducts.length > 0) {
+        console.log(`[Amazon] Tier 2: Found ${apifyProducts.length} products via Apify`);
+        return formatProductData(apifyProducts.map(p => ({
+          title: p.title,
+          price: p.price,
+          priceValue: 0,
+          asin: p.asin,
+          detailPageUrl: p.url,
+          rating: p.rating,
+          features: []
+        })));
+      }
+      console.log(`[Amazon] Tier 2: No products found via Apify`);
+    } catch (error: any) {
+      console.warn(`[Amazon] Tier 2 (Apify) failed: ${error.message}`);
+    }
+  } else {
+    console.log(`[Amazon] Tier 2: Apify not available (no APIFY_TOKEN)`);
+  }
+
+  console.log(`[Amazon] All tiers exhausted for: "${keyword}"`);
+  return emptyResult;
 }
 
 /**
@@ -1346,6 +1371,19 @@ async function getOrCreateClient(): Promise<any> {
 const CLOUDFLARE_ACCOUNT_ID = 'bc8e15f958dc350e00c0e39d80ca6941';
 const CLOUDFLARE_KV_NAMESPACE_ID = 'bd3b856b2ae147ada9a8d236dd4baf30';
 const CLOUDFLARE_ZONE_ID = '646da2c86dbbe1dff196c155381b0704';
+
+// V3: Initialize Index Tracker with KV config (lazy init on first use)
+let indexTrackerInitialized = false;
+async function ensureIndexTrackerInitialized(): Promise<void> {
+  if (indexTrackerInitialized) return;
+  const cfApiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+  if (cfApiToken) {
+    initKVConfig(CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_KV_NAMESPACE_ID, cfApiToken);
+    await initIndexTracker();
+    indexTrackerInitialized = true;
+    console.log('[IndexTracker] Initialized with KV config');
+  }
+}
 const CLOUDFLARE_WORKER_NAME = 'petinsurance';
 // V3 has its own category tracking, independent from V2
 const CATEGORY_STATUS_PREFIX = 'v3:category:status:';
@@ -3933,6 +3971,13 @@ async function deployToCloudflareKV(slug: string, html: string, category: string
       addActivityLog('info', `⚠️ GSC: ${err.message}`, { keyword: slug });
     });
 
+    // V3: Track article for autonomous indexing verification
+    ensureIndexTrackerInitialized().then(() => trackNewArticle(articleUrl, slug, category)).then(() => {
+      addActivityLog('info', `📊 Index tracking started`, { keyword: slug, url: articleUrl });
+    }).catch(err => {
+      console.log(`[IndexTracker] Failed to track: ${err.message}`);
+    });
+
     // Validate rich results using URL Inspection API (run in background)
     validateArticleRichResults(articleUrl).then(result => {
       const richResultsTestUrl = `https://search.google.com/test/rich-results?url=${encodeURIComponent(articleUrl)}`;
@@ -5956,6 +6001,122 @@ router.get('/autonomous/status', async (_req: Request, res: Response) => {
  * Manually create Cloudflare Worker routes for a category
  * Used when auto-creation fails or to verify routes exist
  */
+
+// ============================================================
+// INDEX STATUS DASHBOARD ENDPOINTS (V3 Autonomous Indexing)
+// ============================================================
+
+/**
+ * Get indexing status dashboard data
+ * GET /api/seo-generator-v3/index-status
+ */
+router.get('/index-status', async (_req: Request, res: Response) => {
+  try {
+    await ensureIndexTrackerInitialized();
+    const status = getIndexStatus();
+
+    // Calculate summary
+    const summary = {
+      totalTracked: status.stats.totalTracked,
+      indexed: status.stats.indexed,
+      pending: status.stats.pending,
+      failed: status.stats.failed,
+      successRate: status.stats.totalTracked > 0
+        ? ((status.stats.indexed / status.stats.totalTracked) * 100).toFixed(1) + '%'
+        : 'N/A',
+      avgTimeToIndex: status.stats.avgTimeToIndex.toFixed(1) + ' hours',
+      lastUpdated: status.stats.lastUpdated
+    };
+
+    // Categorize queue items
+    const pendingItems = status.queue.filter(i => i.status === 'pending' || i.status === 'retry_scheduled');
+    const checkingItems = status.queue.filter(i => i.status === 'checking');
+    const indexedItems = status.queue.filter(i => i.status === 'indexed').slice(-20);
+    const failedItems = status.queue.filter(i => i.status === 'failed');
+
+    res.json({
+      success: true,
+      summary,
+      queue: {
+        pending: pendingItems.length,
+        checking: checkingItems.length,
+        indexed: indexedItems.length,
+        failed: failedItems.length,
+        items: {
+          pending: pendingItems.slice(0, 20),
+          failed: failedItems,
+          recentlyIndexed: indexedItems
+        }
+      },
+      recentHistory: status.recentHistory.slice(-10)
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Force recheck a specific URL
+ * POST /api/seo-generator-v3/index-status/recheck
+ */
+router.post('/index-status/recheck', async (req: Request, res: Response) => {
+  try {
+    await ensureIndexTrackerInitialized();
+    const { url } = req.body;
+    if (!url) {
+      return res.status(400).json({ success: false, error: 'URL required' });
+    }
+
+    const result = await forceRecheck(url);
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Manually trigger indexing verification cycle
+ * POST /api/seo-generator-v3/index-status/process
+ */
+router.post('/index-status/process', async (req: Request, res: Response) => {
+  try {
+    await ensureIndexTrackerInitialized();
+    const result = await processIndexQueue();
+
+    // Log results to activity
+    for (const r of result.results) {
+      if (r.status === 'indexed') {
+        addActivityLog('success', `✅ ${r.message}`, { keyword: r.slug, url: r.url });
+      } else if (r.status === 'failed') {
+        addActivityLog('error', `❌ ${r.message}`, { keyword: r.slug, url: r.url });
+      } else if (r.status === 'retry') {
+        addActivityLog('info', `🔄 ${r.message}`, { keyword: r.slug, url: r.url });
+      }
+    }
+
+    res.json({
+      success: true,
+      ...result
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Cleanup old indexing records
+ * POST /api/seo-generator-v3/index-status/cleanup
+ */
+router.post('/index-status/cleanup', async (_req: Request, res: Response) => {
+  try {
+    await ensureIndexTrackerInitialized();
+    const removed = await cleanupOldItems();
+    res.json({ success: true, removed });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.post('/create-route', async (req: Request, res: Response) => {
   try {
     const { category } = req.body;
@@ -6525,6 +6686,24 @@ async function generateNextArticle() {
       remaining: stats.pending,
       queuePosition: stats.generated
     });
+
+    // V3: Indexing verification cycle - run every 5 articles during autonomous mode
+    if (stats.generated % 5 === 0 && stats.generated > 0) {
+      ensureIndexTrackerInitialized().then(() => processIndexQueue()).then(result => {
+        if (result.checked > 0) {
+          console.log(`[IndexTracker] Cycle: ${result.checked} checked, ${result.indexed} indexed, ${result.failed} failed`);
+          for (const r of result.results) {
+            if (r.status === 'indexed') {
+              addActivityLog('success', `Index verified: ${r.slug}`, { url: r.url });
+            } else if (r.status === 'failed') {
+              addActivityLog('error', `Index failed: ${r.slug}`, { url: r.url });
+            }
+          }
+        }
+      }).catch(err => {
+        console.log(`[IndexTracker] Cycle error: ${err.message}`);
+      });
+    }
 
     // Immediately start next article (no delay - max speed mode)
     if (autonomousRunning) {
@@ -7141,55 +7320,16 @@ Return ONLY valid JSON:
     article.title = seoLimits.title;
     article.metaDescription = seoLimits.metaDescription;
 
-    // 9.5 AUTO-GENERATE COMPARISON TABLE (removed from AI prompt to avoid JSON errors)
-    // Use Amazon products if available, otherwise generate from category data
+    // 9.5 AUTO-GENERATE COMPARISON TABLE from Amazon Creators API (single source of truth)
     if (!article.comparisonTable || !article.comparisonTable.rows?.length) {
       if (amazonProducts.products.length > 0) {
-        // Use real Amazon products
         article.comparisonTable = {
           headers: ['Product Name', 'Price', 'Key Features', 'Rating', 'Amazon Search'],
           rows: amazonProducts.comparisonRows
         };
-        console.log(`[SEO-V3] ✓ Auto-generated comparison table from ${amazonProducts.products.length} Amazon products`);
+        console.log(`[SEO-V3] ✓ Comparison table from ${amazonProducts.products.length} Amazon products`);
       } else {
-        // Generate default comparison table from category content
-        const defaultProducts = getCategoryProductExamples(categorySlug, keyword.keyword);
-        // Parse the example text to extract product names if possible
-        const productLines = defaultProducts.split('\n').filter(line => line.includes('-') && line.includes('$'));
-        if (productLines.length >= 3) {
-          const rows = productLines.slice(0, 5).map(line => {
-            const match = line.match(/[-•]\s*(.+?)\s*[-–]\s*\$?([\d.]+)/);
-            if (match) {
-              const name = match[1].trim();
-              const price = `$${match[2]}`;
-              return [name, price, 'Quality product', '4.5/5', name.replace(/\s+/g, '+')];
-            }
-            return null;
-          }).filter(Boolean) as string[][];
-
-          if (rows.length >= 3) {
-            article.comparisonTable = {
-              headers: ['Product Name', 'Price', 'Key Features', 'Rating', 'Amazon Search'],
-              rows: rows
-            };
-            console.log(`[SEO-V3] ✓ Auto-generated comparison table from category defaults (${rows.length} products)`);
-          }
-        }
-
-        // Final fallback: generic table structure using keyword for context
-        if (!article.comparisonTable) {
-          const kw = keyword.keyword.replace(/^best\s+/i, '').replace(/\s+\d{4}$/, '').trim();
-          const capKw = kw.charAt(0).toUpperCase() + kw.slice(1);
-          article.comparisonTable = {
-            headers: ['Product', 'Price Range', 'Best For', 'Rating'],
-            rows: [
-              [`Best ${capKw} - Premium Pick`, '$50-100', 'Top rated quality', '4.8/5'],
-              [`Best ${capKw} - Mid Range`, '$25-50', 'Best value pick', '4.5/5'],
-              [`Best ${capKw} - Budget Friendly`, '$15-25', 'Budget conscious', '4.2/5']
-            ]
-          };
-          console.log(`[SEO-V3] ✓ Using generic comparison table with keyword "${kw}"`);
-        }
+        console.log(`[SEO-V3] ⚠️ No Amazon products found - comparison table will be empty (API needs credentials)`);
       }
     }
 
