@@ -2247,31 +2247,47 @@ function buildArticleHtml(
       ? [...article.comparisonTable.headers.slice(0, -1), 'Buy Now']
       : article.comparisonTable.headers;
     
-    comparisonTableHtml = `
-      <div class="comparison-table">
-        <table>
-          <thead>
-            <tr>${displayHeaders.map(h => `<th>${h}</th>`).join('')}</tr>
-          </thead>
-          <tbody>
-            ${article.comparisonTable.rows.map(row => {
-              // Normalize row to array (AI sometimes returns strings or objects)
-              const rowArray = Array.isArray(row) ? row : (typeof row === 'string' ? [row] : Object.values(row || {}));
-              if (!rowArray.length) return '';
+    const pickItems = article.comparisonTable.rows.map((row: any, idx: number) => {
+      const rowArray = Array.isArray(row) ? row : (typeof row === 'string' ? [row] : Object.values(row || {}));
+      if (!rowArray.length) return '';
 
-              if (hasAmazonColumn && rowArray.length >= 5) {
-                // Last column contains Amazon search query - convert to affiliate link
-                const amazonSearch = rowArray[rowArray.length - 1] || String(rowArray[0]).replace(/\s+/g, '+');
-                const amazonUrl = `https://www.amazon.com/s?k=${encodeURIComponent(String(amazonSearch).replace(/\+/g, ' '))}&tag=${amazonTag}`;
-                const displayCells = rowArray.slice(0, -1);
-                return `<tr>${displayCells.map(cell => `<td>${cell}</td>`).join('')}<td><a href="${amazonUrl}" target="_blank" rel="nofollow sponsored" class="amazon-btn">Buy on Amazon</a></td></tr>`;
-              }
-              return `<tr>${rowArray.map(cell => `<td>${cell}</td>`).join('')}</tr>`;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>
-    `;
+      const productName = String(rowArray[0] || '').replace(/\.{3,}$/, '');
+      const price = String(rowArray[1] || '');
+      const features = String(rowArray[2] || '');
+      const rating = String(rowArray[3] || '');
+
+      let amazonBtnHtml = '';
+      if (hasAmazonColumn && rowArray.length >= 5) {
+        const amazonSearch = rowArray[rowArray.length - 1] || String(rowArray[0]).replace(/\s+/g, '+');
+        const amazonUrl = 'https://www.amazon.com/s?k=' + encodeURIComponent(String(amazonSearch).replace(/\+/g, ' ')) + '&tag=' + amazonTag;
+        amazonBtnHtml = '<a href="' + amazonUrl + '" target="_blank" rel="nofollow sponsored" class="amazon-btn">Buy Now</a>';
+      }
+
+      const ratingNum = parseFloat(rating) || 0;
+      const fullStars = Math.floor(ratingNum);
+      const starsHtml = '\u2605'.repeat(fullStars) + (ratingNum % 1 >= 0.5 ? '\u00BD' : '') + '\u2606'.repeat(5 - Math.ceil(ratingNum));
+
+      const ratingHtml = ratingNum > 0 ? '<span class="pick-rating"><span class="stars">' + starsHtml + '</span> ' + rating + '</span>' : '';
+      const featuresHtml = features && features !== 'Premium quality' ? '<span class="pick-features">' + features + '</span>' : '';
+      const priceHtml = price && price !== 'Price not available' ? '<span class="pick-price">' + price + '</span>' : '';
+
+      return '<li class="top-pick-item">' +
+        '<span class="pick-rank">' + (idx + 1) + '</span>' +
+        '<div class="pick-info">' +
+          '<p class="pick-name">' + productName + '</p>' +
+          '<div class="pick-meta">' + ratingHtml + featuresHtml + priceHtml + '</div>' +
+        '</div>' +
+        amazonBtnHtml +
+      '</li>';
+    }).join('');
+
+    comparisonTableHtml = '<div class="top-picks">' +
+      '<div class="top-picks-header">' +
+        '<span class="picks-icon">\uD83C\uDFC6</span>' +
+        '<h3>Our Top Picks</h3>' +
+      '</div>' +
+      '<ul class="top-picks-list">' + pickItems + '</ul>' +
+    '</div>';
   }
 
   // Helper function to build image HTML with lazy loading and ImageObject schema
@@ -2500,17 +2516,28 @@ article *{max-width:100%}
 .key-takeaways ul{margin:0;padding-left:20px}
 .key-takeaways li{margin:8px 0;line-height:1.6}
 
-/* Comparison Table */
-.comparison-table{overflow-x:auto;margin:30px 0;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.08)}
-.comparison-table table{width:100%;border-collapse:collapse;min-width:500px}
-.comparison-table th,.comparison-table td{padding:14px 16px;border:1px solid var(--wc-color-border);text-align:left}
-.comparison-table th{background:#f8fafc;font-weight:700;color:var(--wc-color-text)}
-.comparison-table tr:nth-child(even){background:#fafbfc}
-.comparison-table tr:hover{background:#e8f4f8}
-.amazon-btn{display:inline-flex;align-items:center;gap:8px;background:linear-gradient(180deg,#ff9900 0%,#e47911 100%);color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px;border:none;box-shadow:0 4px 14px rgba(255,153,0,0.4);transition:all 0.3s ease;white-space:nowrap}
-.amazon-btn:hover{background:linear-gradient(180deg,#ffad33 0%,#ff9900 100%);transform:translateY(-2px);box-shadow:0 6px 20px rgba(255,153,0,0.5);text-decoration:none;color:#fff}
-.amazon-btn::before{content:'';display:inline-block;width:20px;height:20px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'%3E%3Cpath d='M15.75 10.5V6a3.75 3.75 0 1 0-7.5 0v4.5m11.356-1.993 1.263 12c.07.665-.45 1.243-1.119 1.243H4.25a1.125 1.125 0 0 1-1.12-1.243l1.264-12A1.125 1.125 0 0 1 5.513 7.5h12.974c.576 0 1.059.435 1.119 1.007ZM8.625 10.5a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm7.5 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z'/%3E%3C/svg%3E");background-size:contain;background-repeat:no-repeat}
-.amazon-btn:active{transform:translateY(0);box-shadow:0 2px 8px rgba(255,153,0,0.4)}
+/* Our Top Picks - Wirecutter Style */
+.top-picks{margin:32px 0;border:2px solid #e2e8f0;border-radius:12px;overflow:hidden;background:#fff}
+.top-picks-header{background:linear-gradient(135deg,#1a365d 0%,#2d3748 100%);padding:16px 24px;display:flex;align-items:center;gap:10px}
+.top-picks-header h3{margin:0;color:#fff;font-size:20px;font-weight:800;letter-spacing:-0.3px}
+.top-picks-header .picks-icon{font-size:22px}
+.top-picks-list{padding:0;margin:0;list-style:none}
+.top-pick-item{display:flex;align-items:center;justify-content:space-between;padding:18px 24px;border-bottom:1px solid #e2e8f0;gap:16px;transition:background 0.2s ease}
+.top-pick-item:last-child{border-bottom:none}
+.top-pick-item:hover{background:#f7fafc}
+.pick-rank{flex-shrink:0;width:32px;height:32px;background:#edf2f7;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#2d3748}
+.pick-info{flex:1;min-width:0}
+.pick-name{font-weight:700;font-size:15px;color:#1a202c;margin:0 0 4px 0;line-height:1.3}
+.pick-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.pick-rating{display:inline-flex;align-items:center;gap:4px;font-size:13px;color:#d69e2e;font-weight:600}
+.pick-rating .stars{color:#d69e2e}
+.pick-features{font-size:13px;color:#718096}
+.pick-price{font-size:13px;color:#4a5568;font-weight:600}
+.amazon-btn{display:inline-flex;align-items:center;gap:6px;background:linear-gradient(180deg,#ff9900 0%,#e47911 100%);color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px;border:none;box-shadow:0 3px 10px rgba(255,153,0,0.3);transition:all 0.3s ease;white-space:nowrap;flex-shrink:0}
+.amazon-btn:hover{background:linear-gradient(180deg,#ffad33 0%,#ff9900 100%);transform:translateY(-1px);box-shadow:0 5px 16px rgba(255,153,0,0.4);text-decoration:none;color:#fff}
+.amazon-btn::before{content:'';display:inline-block;width:18px;height:18px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'%3E%3Cpath d='M15.75 10.5V6a3.75 3.75 0 1 0-7.5 0v4.5m11.356-1.993 1.263 12c.07.665-.45 1.243-1.119 1.243H4.25a1.125 1.125 0 0 1-1.12-1.243l1.264-12A1.125 1.125 0 0 1 5.513 7.5h12.974c.576 0 1.059.435 1.119 1.007ZM8.625 10.5a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm7.5 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z'/%3E%3C/svg%3E");background-size:contain;background-repeat:no-repeat}
+.amazon-btn:active{transform:translateY(0);box-shadow:0 2px 8px rgba(255,153,0,0.3)}
+@media(max-width:640px){.top-pick-item{flex-wrap:wrap;gap:12px;padding:14px 16px}.pick-rank{width:28px;height:28px;font-size:12px}.amazon-btn{width:100%;justify-content:center;padding:12px}}
 
 /* FAQ Section */
 .faqs{background:#f8f8f8;padding:24px;border-radius:8px;margin:40px 0}
@@ -2654,6 +2681,8 @@ article *{max-width:100%}
     </div>
   ` : ''}
 
+  ${comparisonTableHtml}
+
   ${tocHtml}
 
   ${heroImageHtml}
@@ -2663,8 +2692,6 @@ article *{max-width:100%}
   </div>
 
   ${sectionsHtml}
-
-  ${comparisonTableHtml}
 
   ${faqHtml}
 
@@ -2689,70 +2716,25 @@ async function updateSitemap(slug: string, context: CategoryContext | null): Pro
   const cfApiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
   if (!cfApiToken) return;
 
-  // Robust CategoryContext guards - derive from categorySlug if available
-  const derivedSlug = context?.categorySlug || 'v3-articles';
-  const safeKvPrefix = context?.kvPrefix || `${derivedSlug}:`;
-  const safeDomain = context?.domain || 'catsluvus.com';
-  const safeBasePath = context?.basePath || `/${derivedSlug}`;
+  const categorySlug = context?.categorySlug || 'v3-articles';
 
   try {
-    const sitemapKey = `${safeKvPrefix}sitemap.xml`;
-    const articleUrl = `https://${safeDomain}${safeBasePath}/${slug}`;
-    const today = new Date().toISOString().split('T')[0];
+    // Invalidate the cached sitemap for this category so the Worker regenerates it
+    // dynamically from KV keys on the next request
+    const cacheKey = `sitemap:${categorySlug}`;
+    const deleteUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(cacheKey)}`;
 
-    // Fetch existing sitemap
-    const getUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(sitemapKey)}`;
-    let existingSitemap = '';
-    
-    try {
-      const response = await fetch(getUrl, {
-        headers: { 'Authorization': `Bearer ${cfApiToken}` }
-      });
-      if (response.ok) {
-        existingSitemap = await response.text();
-      }
-    } catch {}
-
-    // If no sitemap exists, create new one
-    if (!existingSitemap || !existingSitemap.includes('<?xml')) {
-      existingSitemap = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>https://${safeDomain}${safeBasePath}</loc>
-    <lastmod>${today}</lastmod>
-    <changefreq>daily</changefreq>
-    <priority>1.0</priority>
-  </url>
-</urlset>`;
-    }
-
-    // Check if URL already exists
-    if (existingSitemap.includes(articleUrl)) {
-      return;
-    }
-
-    // Add new URL before closing </urlset>
-    const newEntry = `  <url>
-    <loc>${articleUrl}</loc>
-    <lastmod>${today}</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.8</priority>
-  </url>
-</urlset>`;
-
-    const updatedSitemap = existingSitemap.replace('</urlset>', newEntry);
-
-    // Save updated sitemap
-    const putUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(sitemapKey)}`;
-    await fetch(putUrl, {
-      method: 'PUT',
-      headers: { 'Authorization': `Bearer ${cfApiToken}`, 'Content-Type': 'application/xml' },
-      body: updatedSitemap
+    await fetch(deleteUrl, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${cfApiToken}` }
     });
 
-    console.log(`[SEO-V3] 🗺️ Sitemap updated: ${slug}`);
+    console.log(`[SEO-V3] 🗺️ Sitemap cache invalidated for ${categorySlug} (new article: ${slug})`);
+
+    // Purge Cloudflare CDN cache for the sitemap URL
+    await purgeSitemapCache(cfApiToken, categorySlug);
   } catch (error: any) {
-    console.error('[SEO-V3] Sitemap update error:', error.message);
+    console.error('[SEO-V3] Sitemap cache invalidation error:', error.message);
   }
 }
 
@@ -4133,79 +4115,25 @@ async function updateSitemapWithArticle(slug: string, category: string = 'petins
   }
 
   try {
-    const articleUrl = `https://catsluvus.com/${category}/${slug}`;
-    const today = new Date().toISOString().split('T')[0];
+    // Invalidate the cached sitemap for this category so the Worker regenerates it
+    // dynamically from KV keys on the next request (the article KV key already exists)
+    const cacheKey = `sitemap:${category}`;
+    const deleteUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(cacheKey)}`;
 
-    // Fetch existing sitemap from public URL
-    let sitemap = await fetchCurrentSitemap();
-
-    if (sitemap) {
-      // Check if URL already exists in sitemap
-      if (sitemap.includes(`<loc>${articleUrl}</loc>`)) {
-        console.log(`📍 Article already in sitemap: ${slug}`);
-        addActivityLog('info', `📍 Sitemap: Article already indexed`, { keyword: slug, url: articleUrl });
-        return true;
-      }
-
-      // Add new URL entry before closing </urlset> tag
-      const newEntry = `  <url>
-    <loc>${articleUrl}</loc>
-    <lastmod>${today}</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.8</priority>
-  </url>
-</urlset>`;
-
-      sitemap = sitemap.replace('</urlset>', newEntry);
-    } else {
-      // Create new sitemap from scratch
-      sitemap = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
-        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-        xsi:schemaLocation="http://www.sitemaps.org/schemas/sitemap/0.9
-        http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd">
-  <url>
-    <loc>https://catsluvus.com/petinsurance/</loc>
-    <lastmod>${today}</lastmod>
-    <changefreq>daily</changefreq>
-    <priority>1.0</priority>
-  </url>
-  <url>
-    <loc>${articleUrl}</loc>
-    <lastmod>${today}</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.8</priority>
-  </url>
-</urlset>`;
-    }
-
-    // Upload updated sitemap to KV
-    const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/sitemap.xml`;
-
-    const response = await fetch(url, {
-      method: 'PUT',
-      headers: {
-        'Authorization': `Bearer ${cfApiToken}`,
-        'Content-Type': 'application/xml'
-      },
-      body: sitemap
+    await fetch(deleteUrl, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${cfApiToken}` }
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Sitemap update error:', errorText);
-      return false;
-    }
+    console.log(`🗺️ Sitemap cache invalidated for ${category} (new article: ${slug})`);
+    addActivityLog('success', `🗺️ Sitemap: Cache invalidated for ${category}`, { keyword: slug, url: `https://catsluvus.com/${category}/${slug}` });
 
-    console.log(`🗺️ Sitemap updated with: ${slug}`);
-    addActivityLog('success', `🗺️ Sitemap: Added new article`, { keyword: slug, url: articleUrl });
-
-    // Purge Cloudflare cache for sitemap
-    await purgeSitemapCache(cfApiToken);
+    // Purge Cloudflare CDN cache for the sitemap URL
+    await purgeSitemapCache(cfApiToken, category);
 
     return true;
   } catch (error) {
-    console.error('Error updating sitemap:', error);
+    console.error('Error invalidating sitemap cache:', error);
     return false;
   }
 }
@@ -7306,10 +7234,23 @@ Return ONLY valid JSON:
     }
     const sanitizedJson = jsonMatch[0]
       .replace(/[\x00-\x1F\x7F]/g, (char) => {
-        if (char === '\t' || char === '\n' || char === '\r') return char;
+        if (char === '\n') return '\\n';
+        if (char === '\r') return '\\r';
+        if (char === '\t') return '\\t';
         return '';
       });
-    const article = JSON.parse(sanitizedJson) as ArticleData;
+    let article: ArticleData;
+    try {
+      article = JSON.parse(sanitizedJson) as ArticleData;
+    } catch (jsonErr: any) {
+      const cleaned = sanitizedJson
+        .replace(/\\n/g, ' ')
+        .replace(/\\r/g, '')
+        .replace(/\\t/g, ' ')
+        .replace(/,\s*}/g, '}')
+        .replace(/,\s*]/g, ']');
+      article = JSON.parse(cleaned) as ArticleData;
+    }
 
     if (!article.title) {
       throw new Error('Invalid article JSON - missing title');
@@ -8142,25 +8083,38 @@ setTimeout(() => {
 // Runs every 10 minutes to ensure all categories have proper routing
 // ============================================================================
 
-const KNOWN_CATEGORIES = [
-  'petinsurance',
-  'automatic-cat-feeders',
-  'cat-automatic-litter-box-cleaners',
-  'cat-calming-anxiety-products',
-  'cat-carriers-travel-products',
-  'cat-dna-testing',
-  'cat-enclosures-outdoor-catios',
-  'cat-flea-tick-treatments',
-  'cat-food-delivery-services',
-  'cat-food-nutrition',
-  'cat-gps-trackers',
-  'cat-grooming-tools-kits',
-  'cat-health-supplements',
-  'cat-scratchers-scratching-posts',
-  'cat-toys-interactive',
-  'cat-trees-furniture',
-  'cat-dental-care'
-];
+function getAllKnownCategories(): string[] {
+  const staticCategories = [
+    'petinsurance',
+    'automatic-cat-feeders',
+    'cat-automatic-litter-box-cleaners',
+    'cat-calming-anxiety-products',
+    'cat-carriers-travel-products',
+    'cat-dna-testing',
+    'cat-enclosures-outdoor-catios',
+    'cat-flea-tick-treatments',
+    'cat-food-delivery-services',
+    'cat-food-nutrition',
+    'cat-gps-trackers',
+    'cat-grooming-tools-kits',
+    'cat-health-supplements',
+    'cat-scratchers-scratching-posts',
+    'cat-trees-furniture',
+    'cat-beds',
+    'cat-health-wellness',
+    'cat-litter-boxes',
+    'cat-toys',
+    'cat-trees-condos',
+    'cat-scratching-posts-pads',
+    'cat-strollers-pet-buggies',
+    'cat-cameras-monitors',
+    'cat-furniture-protectors',
+    'cat-litter-mats',
+    'cat-dental-care-products'
+  ];
+  const combined = new Set([...staticCategories, ...V3_EXCLUSIVE_CATEGORIES]);
+  return Array.from(combined);
+}
 
 async function healMissingRoutes(): Promise<{ checked: number; created: number; errors: string[] }> {
   const cfApiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
@@ -8169,12 +8123,12 @@ async function healMissingRoutes(): Promise<{ checked: number; created: number; 
     return { checked: 0, created: 0, errors: ['No API token'] };
   }
 
-  console.log('[Route Healer] 🔧 Starting autonomous route healing check...');
+  const allCategories = getAllKnownCategories();
+  console.log(`[Route Healer] 🔧 Checking ${allCategories.length} categories for missing routes...`);
   let checked = 0;
   let created = 0;
   const errors: string[] = [];
 
-  // Fetch existing routes once
   let existingRoutes: any[] = [];
   try {
     existingRoutes = await fetchWorkerRoutes(cfApiToken);
@@ -8184,8 +8138,7 @@ async function healMissingRoutes(): Promise<{ checked: number; created: number; 
     return { checked: 0, created: 0, errors: [err.message] };
   }
 
-  // Check each known category
-  for (const category of KNOWN_CATEGORIES) {
+  for (const category of allCategories) {
     checked++;
     const routePattern = `catsluvus.com/${category}/*`;
     const hasRoute = existingRoutes.some((r: any) => r.pattern === routePattern);
