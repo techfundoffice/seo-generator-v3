@@ -1,0 +1,130 @@
+"use strict";
+/**
+ * Tier 2: Apify Amazon Product Service
+ * Fallback when Amazon Creators API fails (e.g., AccessDeniedException)
+ * Uses Apify Amazon Product Scraper actor
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.isApifyAvailable = exports.getProductByAsinViaApify = exports.searchProductsViaApify = void 0;
+const doppler_secrets_1 = require("./doppler-secrets");
+const APIFY_ACTOR_ID = "junglee~free-amazon-product-scraper";
+const AMAZON_AFFILIATE_TAG = doppler_secrets_1.secrets.get("AMAZON_AFFILIATE_TAG") || process.env.AMAZON_AFFILIATE_TAG || "catsluvus03-20";
+const AMAZON_MARKETPLACE = "www.amazon.com";
+function getApifyToken() {
+    return doppler_secrets_1.secrets.get("APIFY_TOKEN") || process.env.APIFY_TOKEN;
+}
+async function searchProductsViaApify(keyword, maxResults = 3) {
+    const APIFY_TOKEN = getApifyToken();
+    if (!APIFY_TOKEN)
+        throw new Error("APIFY_TOKEN not configured");
+    console.log(`[Apify Amazon] Searching for: "${keyword}" (max ${maxResults})`);
+    try {
+        const searchUrl = `https://${AMAZON_MARKETPLACE}/s?k=${encodeURIComponent(keyword)}`;
+        const runResponse = await fetch(`https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                categoryUrls: [{ url: searchUrl }],
+                maxItemsPerStartUrl: maxResults,
+                maxPagesPerStartUrl: 1
+            })
+        });
+        if (!runResponse.ok) {
+            const errText = await runResponse.text().catch(() => "");
+            throw new Error(`Apify run failed: ${runResponse.status} ${runResponse.statusText} ${errText}`);
+        }
+        const runData = await runResponse.json();
+        const runId = runData.data?.id;
+        if (!runId)
+            throw new Error("No run ID returned");
+        console.log(`[Apify Amazon] Run started: ${runId}`);
+        // Poll for completion (max 60 seconds)
+        let status = "RUNNING";
+        let attempts = 0;
+        while (status === "RUNNING" && attempts < 30) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            const statusResponse = await fetch(`https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_TOKEN}`);
+            const statusData = await statusResponse.json();
+            status = statusData.data?.status || "FAILED";
+            attempts++;
+        }
+        if (status !== "SUCCEEDED")
+            throw new Error(`Apify run did not succeed: ${status}`);
+        const datasetResponse = await fetch(`https://api.apify.com/v2/actor-runs/${runId}/dataset/items?token=${APIFY_TOKEN}`);
+        const items = await datasetResponse.json();
+        console.log(`[Apify Amazon] Got ${items.length} results for "${keyword}"`);
+        return items.slice(0, maxResults).map(item => ({
+            asin: item.asin,
+            title: item.title || "Unknown Product",
+            url: `https://${AMAZON_MARKETPLACE}/dp/${item.asin}?tag=${AMAZON_AFFILIATE_TAG}`,
+            imageUrl: item.thumbnailImage || "",
+            price: item.price?.displayPrice || "Price not available",
+            rating: item.stars || 0,
+            reviewCount: item.reviewsCount || 0,
+            isPrime: item.isPrime || false
+        }));
+    }
+    catch (error) {
+        console.error(`[Apify Amazon] Search error: ${error.message}`);
+        throw error;
+    }
+}
+exports.searchProductsViaApify = searchProductsViaApify;
+async function getProductByAsinViaApify(asin) {
+    const APIFY_TOKEN = getApifyToken();
+    if (!APIFY_TOKEN)
+        throw new Error("APIFY_TOKEN not configured");
+    console.log(`[Apify Amazon] Fetching product ASIN: ${asin}`);
+    try {
+        const runResponse = await fetch(`https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                startUrls: [{ url: `https://${AMAZON_MARKETPLACE}/dp/${asin}` }],
+                country: "US",
+                maxItemsPerStartUrl: 1,
+                proxyConfiguration: { useApifyProxy: true }
+            })
+        });
+        if (!runResponse.ok)
+            return null;
+        const runData = await runResponse.json();
+        const runId = runData.data?.id;
+        let status = "RUNNING";
+        let attempts = 0;
+        while (status === "RUNNING" && attempts < 30) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            const statusResponse = await fetch(`https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_TOKEN}`);
+            const statusData = await statusResponse.json();
+            status = statusData.data?.status || "FAILED";
+            attempts++;
+        }
+        if (status !== "SUCCEEDED")
+            return null;
+        const datasetResponse = await fetch(`https://api.apify.com/v2/actor-runs/${runId}/dataset/items?token=${APIFY_TOKEN}`);
+        const items = await datasetResponse.json();
+        if (items.length === 0)
+            return null;
+        const item = items[0];
+        return {
+            asin: item.asin || asin,
+            title: item.title || "Unknown Product",
+            url: `https://${AMAZON_MARKETPLACE}/dp/${item.asin || asin}?tag=${AMAZON_AFFILIATE_TAG}`,
+            imageUrl: item.thumbnailImage || "",
+            price: item.price?.displayPrice || "Price not available",
+            rating: item.stars || 0,
+            reviewCount: item.reviewsCount || 0,
+            isPrime: item.isPrime || false
+        };
+    }
+    catch (error) {
+        console.error(`[Apify Amazon] ASIN lookup error: ${error.message}`);
+        return null;
+    }
+}
+exports.getProductByAsinViaApify = getProductByAsinViaApify;
+function isApifyAvailable() {
+    return !!getApifyToken();
+}
+exports.isApifyAvailable = isApifyAvailable;
+//# sourceMappingURL=apify-amazon.js.map

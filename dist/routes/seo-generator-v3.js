@@ -1,0 +1,7610 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const cheerio = __importStar(require("cheerio"));
+const child_process_1 = require("child_process");
+const path = __importStar(require("path"));
+const doppler_secrets_1 = require("../services/doppler-secrets");
+const cloudflare_ai_client_1 = require("../services/cloudflare-ai-client");
+const dataforseo_client_1 = require("../services/dataforseo-client");
+const cloudflare_image_gen_1 = require("../services/cloudflare-image-gen");
+const seord_1 = require("seord");
+// V3: Indexing Tracker Integration (autonomous index verification)
+const indexing_tracker_1 = require("../services/indexing-tracker");
+// V3: Skill Engine Integration
+const skill_engine_1 = require("../services/skill-engine");
+const research_engine_1 = require("../services/research-engine");
+const seo_skills_1 = require("../config/seo-skills");
+const category_context_1 = require("../types/category-context");
+const seo_data_1 = require("../data/seo-data");
+const keyword_priorities_1 = require("../data/keyword-priorities");
+const amazon_products_1 = require("../services/amazon-products");
+const apify_amazon_1 = require("../services/apify-amazon");
+// Lazy-load google-search-console to avoid 20+ second startup delay from googleapis
+let gscModule = null;
+async function getGSCModule() {
+    if (!gscModule) {
+        gscModule = await Promise.resolve().then(() => __importStar(require('../services/google-search-console')));
+    }
+    return gscModule;
+}
+async function notifyGoogleOfNewArticle(slug) {
+    const gsc = await getGSCModule();
+    return gsc.notifyGoogleOfNewArticle(slug);
+}
+async function validateArticleRichResults(articleUrl) {
+    const gsc = await getGSCModule();
+    return gsc.validateRichResults(articleUrl);
+}
+// Video Schema Validator for Google Rich Results
+// Required properties per https://developers.google.com/search/docs/appearance/structured-data/video
+function validateVideoSchema(htmlContent) {
+    const requiredProps = [
+        { name: 'name', patterns: ['itemprop="name"', '"name":', '@name'] },
+        { name: 'description', patterns: ['itemprop="description"', '"description":'] },
+        { name: 'thumbnailUrl', patterns: ['itemprop="thumbnailUrl"', '"thumbnailUrl":'] },
+        { name: 'uploadDate', patterns: ['itemprop="uploadDate"', '"uploadDate":'] },
+        { name: 'duration', patterns: ['itemprop="duration"', '"duration":'] },
+        { name: 'embedUrl', patterns: ['itemprop="embedUrl"', '"embedUrl":', 'youtube.com/embed'] },
+        { name: 'contentUrl', patterns: ['itemprop="contentUrl"', '"contentUrl":'] }
+    ];
+    const recommendedProps = [
+        { name: 'publisher', patterns: ['itemprop="publisher"', '"publisher":'] },
+        { name: 'interactionStatistic', patterns: ['itemprop="interactionStatistic"', 'InteractionCounter', '"interactionStatistic":'] }
+    ];
+    const foundProps = [];
+    const missingProps = [];
+    // Check required properties
+    for (const prop of requiredProps) {
+        const found = prop.patterns.some(pattern => htmlContent.includes(pattern));
+        if (found) {
+            foundProps.push(prop.name);
+        }
+        else {
+            missingProps.push(prop.name);
+        }
+    }
+    // Check recommended properties (warn but don't fail)
+    for (const prop of recommendedProps) {
+        const found = prop.patterns.some(pattern => htmlContent.includes(pattern));
+        if (found) {
+            foundProps.push(prop.name + ' (recommended)');
+        }
+    }
+    // Valid if all required properties are present
+    const isValid = missingProps.length === 0;
+    return { isValid, missingProps, foundProps };
+}
+// Enhanced SEO Score Calculator - Hybrid scoring with bonuses for our SEO improvements
+async function calculateSEOScore(htmlContent, keyword, title, metaDescription) {
+    try {
+        const $ = cheerio.load(htmlContent);
+        // Extract title if not provided
+        const articleTitle = title || $('title').text() || $('h1').first().text() || 'Pet Insurance Guide';
+        // Extract meta description if not provided
+        const articleMetaDesc = metaDescription || $('meta[name="description"]').attr('content') || '';
+        // Use keyword or extract from title
+        const mainKeyword = keyword || articleTitle.split(' ').slice(0, 3).join(' ').toLowerCase();
+        // Generate sub-keywords from title words
+        const subKeywords = articleTitle.toLowerCase()
+            .split(/\s+/)
+            .filter(w => w.length > 3 && !['the', 'and', 'for', 'with', 'your', 'that', 'this', 'from', 'have', 'will'].includes(w))
+            .slice(0, 5);
+        // Create content JSON for seord
+        const contentJson = {
+            title: articleTitle,
+            htmlText: htmlContent,
+            keyword: mainKeyword,
+            subKeywords: subKeywords.length > 0 ? subKeywords : ['pet insurance', 'coverage', 'cost'],
+            metaDescription: articleMetaDesc,
+            languageCode: 'en',
+            countryCode: 'us'
+        };
+        // Get base score from seord library
+        const seoCheck = new seord_1.SeoCheck(contentJson, 'catsluvus.com');
+        const result = await seoCheck.analyzeSeo();
+        let baseScore = Math.round(result.seoScore || 50);
+        // ========== ENHANCED SEO BONUSES ==========
+        // Award points for our SEO improvements that seord doesn't fully credit
+        let bonusPoints = 0;
+        const bonusDetails = [];
+        // 1. Schema Markup Bonus (+10 max)
+        const hasArticleSchema = htmlContent.includes('"@type":"Article"') || htmlContent.includes('"@type": "Article"');
+        const hasFAQSchema = htmlContent.includes('"@type":"FAQPage"') || htmlContent.includes('"@type": "FAQPage"');
+        const hasBreadcrumbSchema = htmlContent.includes('"@type":"BreadcrumbList"') || htmlContent.includes('"@type": "BreadcrumbList"');
+        const hasOrgSchema = htmlContent.includes('"@type":"Organization"') || htmlContent.includes('"@type": "Organization"');
+        if (hasArticleSchema) {
+            bonusPoints += 3;
+            bonusDetails.push('Article schema');
+        }
+        if (hasFAQSchema) {
+            bonusPoints += 3;
+            bonusDetails.push('FAQ schema');
+        }
+        if (hasBreadcrumbSchema) {
+            bonusPoints += 2;
+            bonusDetails.push('Breadcrumb schema');
+        }
+        if (hasOrgSchema) {
+            bonusPoints += 2;
+            bonusDetails.push('Organization schema');
+        }
+        // 2. Internal Links Bonus (+8 max)
+        const internalLinks = $('a[href*="catsluvus.com"], a[href^="/"]').length;
+        if (internalLinks >= 5) {
+            bonusPoints += 4;
+            bonusDetails.push(`${internalLinks} internal links`);
+        }
+        else if (internalLinks >= 3) {
+            bonusPoints += 2;
+        }
+        if (internalLinks >= 10) {
+            bonusPoints += 4;
+        } // Extra for 10+ links
+        // 3. Video Schema Verification (+8 max) - Full Rich Results compliance
+        const hasVideoEmbed = htmlContent.includes('youtube.com/embed');
+        const hasVideoSchema = htmlContent.includes('VideoObject');
+        const videoSchemaValid = validateVideoSchema(htmlContent);
+        if (hasVideoEmbed && hasVideoSchema && videoSchemaValid.isValid) {
+            bonusPoints += 8;
+            bonusDetails.push('Video embed + complete schema');
+        }
+        else if (hasVideoEmbed && hasVideoSchema) {
+            bonusPoints += 5;
+            bonusDetails.push('Video embed');
+            if (videoSchemaValid.missingProps.length > 0) {
+                console.warn(`   [Video Schema] Missing properties for Rich Results: ${videoSchemaValid.missingProps.join(', ')}`);
+            }
+        }
+        else if (hasVideoEmbed) {
+            bonusPoints += 3;
+            bonusDetails.push('Video (no schema)');
+        }
+        // 4. Word Count Bonus (+5 max) - for exceeding 2500 words
+        const wordCount = result.wordCount || 0;
+        if (wordCount >= 3500) {
+            bonusPoints += 5;
+            bonusDetails.push(`${wordCount} words`);
+        }
+        else if (wordCount >= 2500) {
+            bonusPoints += 3;
+        }
+        else if (wordCount >= 1500) {
+            bonusPoints += 1;
+        }
+        // 5. Heading Structure Bonus (+5 max)
+        const h2Count = $('h2').length;
+        const h3Count = $('h3').length;
+        if (h2Count >= 5 && h3Count >= 3) {
+            bonusPoints += 5;
+            bonusDetails.push('Good heading structure');
+        }
+        else if (h2Count >= 3) {
+            bonusPoints += 3;
+        }
+        // 6. Images with Alt Text Bonus (+4 max)
+        const imagesWithAlt = $('img[alt]').filter((_, el) => ($(el).attr('alt') || '').trim().length > 0).length;
+        if (imagesWithAlt >= 3) {
+            bonusPoints += 4;
+            bonusDetails.push(`${imagesWithAlt} images with alt`);
+        }
+        else if (imagesWithAlt >= 1) {
+            bonusPoints += 2;
+        }
+        // 7. Meta Description Length Bonus (+3)
+        if (articleMetaDesc.length >= 120 && articleMetaDesc.length <= 160) {
+            bonusPoints += 3;
+            bonusDetails.push('Optimal meta length');
+        }
+        else if (articleMetaDesc.length >= 100 && articleMetaDesc.length <= 180) {
+            bonusPoints += 1;
+        }
+        // 8. Title Length Bonus (+3)
+        if (articleTitle.length >= 40 && articleTitle.length <= 60) {
+            bonusPoints += 3;
+            bonusDetails.push('Optimal title length');
+        }
+        else if (articleTitle.length >= 30 && articleTitle.length <= 70) {
+            bonusPoints += 1;
+        }
+        // 9. Table/Comparison Bonus (+3)
+        const hasTables = $('table').length > 0;
+        if (hasTables) {
+            bonusPoints += 3;
+            bonusDetails.push('Comparison tables');
+        }
+        // Calculate final score (cap at 100)
+        const finalScore = Math.min(100, baseScore + bonusPoints);
+        if (bonusPoints > 0) {
+            console.log(`   [SEO Bonus] +${bonusPoints} points: ${bonusDetails.join(', ')}`);
+        }
+        return {
+            score: finalScore,
+            details: {
+                wordCount: wordCount,
+                keywordDensity: result.keywordDensity || 0,
+                warnings: result.messages?.warnings?.length || 0,
+                goodPoints: (result.messages?.goodPoints?.length || 0) + Math.floor(bonusPoints / 3)
+            }
+        };
+    }
+    catch (error) {
+        console.error('[SEO Score] Analysis failed:', error);
+        return { score: 0, details: { wordCount: 0, keywordDensity: 0, warnings: 0, goodPoints: 0 } };
+    }
+}
+const router = (0, express_1.Router)();
+// Dynamic year - automatically uses current year
+const CURRENT_YEAR = new Date().getFullYear();
+// ============================================================================
+// Track keywords currently being processed by workers (prevents race conditions)
+const keywordsInProgress = new Set();
+const pageSpeedQueue = [];
+let pageSpeedLastCall = 0;
+let pageSpeedProcessing = false;
+const PAGESPEED_MIN_INTERVAL = 90000; // 90 seconds between checks (was 5s)
+const PAGESPEED_MAX_RETRIES = 3;
+const PAGESPEED_BACKOFF_BASE = 120000; // Start with 2 minute backoff for 429s
+function queuePageSpeedCheck(item) {
+    pageSpeedQueue.push({
+        ...item,
+        retryCount: 0,
+        addedAt: Date.now()
+    });
+    console.log(`[PageSpeed Queue] Added: ${item.articleSlug} (queue size: ${pageSpeedQueue.length})`);
+    processPageSpeedQueue();
+}
+async function processPageSpeedQueue() {
+    if (pageSpeedProcessing || pageSpeedQueue.length === 0)
+        return;
+    const now = Date.now();
+    const timeSinceLastCall = now - pageSpeedLastCall;
+    if (timeSinceLastCall < PAGESPEED_MIN_INTERVAL) {
+        const waitTime = PAGESPEED_MIN_INTERVAL - timeSinceLastCall;
+        console.log(`[PageSpeed Queue] Rate limited, waiting ${Math.round(waitTime / 1000)}s (${pageSpeedQueue.length} in queue)`);
+        setTimeout(processPageSpeedQueue, waitTime + 1000);
+        return;
+    }
+    pageSpeedProcessing = true;
+    const item = pageSpeedQueue.shift();
+    try {
+        pageSpeedLastCall = Date.now();
+        const pageSpeed = await analyzePageSpeedWithRetry(item.url, item.strategy, item.retryCount);
+        console.log(`[SEO-V3] 🚀 PageSpeed: ${pageSpeed.scores.performance}/100 perf, ${pageSpeed.scores.seo}/100 seo, LCP ${pageSpeed.coreWebVitals.lcp}ms`);
+        if (pageSpeed.scores.performance < 70) {
+            console.log(`[SEO-V3] ⚠️ Performance ${pageSpeed.scores.performance}/100 - applying auto-optimizations...`);
+            const optimizedHtml = optimizeArticleHtml(item.originalHtml);
+            const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+            if (cfApiToken) {
+                const redeployUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(item.kvKey)}`;
+                await fetch(redeployUrl, {
+                    method: 'PUT',
+                    headers: { 'Authorization': `Bearer ${cfApiToken}`, 'Content-Type': 'text/html' },
+                    body: optimizedHtml
+                });
+                console.log(`[SEO-V3] ✨ Redeployed optimized version: ${item.kvKey}`);
+                addActivityLog('success', `[V3] Optimized HTML deployed`, {
+                    url: item.url,
+                    originalPerformance: pageSpeed.scores.performance
+                });
+            }
+        }
+        else if (pageSpeed.coreWebVitals.lcp > 4000) {
+            console.log(`[SEO-V3] ⚠️ LCP too slow (${pageSpeed.coreWebVitals.lcp}ms) - may hurt rankings`);
+        }
+        addActivityLog('info', `[V3] PageSpeed: ${pageSpeed.scores.performance}/100`, {
+            url: item.url,
+            performance: pageSpeed.scores.performance,
+            seo: pageSpeed.scores.seo,
+            lcp: pageSpeed.coreWebVitals.lcp
+        });
+    }
+    catch (err) {
+        if (err.message?.includes('429') && item.retryCount < PAGESPEED_MAX_RETRIES) {
+            const backoffTime = PAGESPEED_BACKOFF_BASE * Math.pow(2, item.retryCount);
+            console.log(`[PageSpeed Queue] 429 rate limited, retrying in ${Math.round(backoffTime / 1000)}s (attempt ${item.retryCount + 1}/${PAGESPEED_MAX_RETRIES})`);
+            setTimeout(() => {
+                pageSpeedQueue.push({
+                    ...item,
+                    retryCount: item.retryCount + 1
+                });
+                processPageSpeedQueue();
+            }, backoffTime);
+        }
+        else {
+            console.log(`[PageSpeed Queue] Skipped: ${item.articleSlug} - ${err.message}`);
+        }
+    }
+    pageSpeedProcessing = false;
+    if (pageSpeedQueue.length > 0) {
+        setTimeout(processPageSpeedQueue, PAGESPEED_MIN_INTERVAL);
+    }
+}
+async function analyzePageSpeedWithRetry(url, strategy, retryCount) {
+    const apiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&strategy=${strategy}&category=performance&category=seo&category=accessibility&category=best-practices`;
+    console.log(`[PageSpeed] Analyzing ${url} (${strategy})${retryCount > 0 ? ` [retry ${retryCount}]` : ''}...`);
+    const response = await fetch(apiUrl);
+    if (!response.ok) {
+        throw new Error(`PageSpeed API error: ${response.status} ${response.statusText}`);
+    }
+    const data = await response.json();
+    const lighthouse = data.lighthouseResult;
+    if (!lighthouse) {
+        throw new Error('No Lighthouse results in response');
+    }
+    const opportunities = [];
+    const opportunityAudits = [
+        'render-blocking-resources', 'unused-css-rules', 'unused-javascript',
+        'modern-image-formats', 'offscreen-images', 'efficient-animated-content'
+    ];
+    for (const auditId of opportunityAudits) {
+        const audit = lighthouse.audits?.[auditId];
+        if (audit && audit.score !== null && audit.score < 1) {
+            opportunities.push({
+                title: audit.title || auditId,
+                description: audit.description || '',
+                savings: audit.displayValue || 'Potential savings'
+            });
+        }
+    }
+    return {
+        url,
+        strategy,
+        scores: {
+            performance: Math.round((lighthouse.categories?.performance?.score || 0) * 100),
+            accessibility: Math.round((lighthouse.categories?.accessibility?.score || 0) * 100),
+            bestPractices: Math.round((lighthouse.categories?.['best-practices']?.score || 0) * 100),
+            seo: Math.round((lighthouse.categories?.seo?.score || 0) * 100)
+        },
+        coreWebVitals: {
+            lcp: Math.round(lighthouse.audits?.['largest-contentful-paint']?.numericValue || 0),
+            cls: parseFloat((lighthouse.audits?.['cumulative-layout-shift']?.numericValue || 0).toFixed(3)),
+            tbt: Math.round(lighthouse.audits?.['total-blocking-time']?.numericValue || 0),
+            fcp: Math.round(lighthouse.audits?.['first-contentful-paint']?.numericValue || 0),
+            si: Math.round(lighthouse.audits?.['speed-index']?.numericValue || 0),
+            ttfb: Math.round(lighthouse.audits?.['server-response-time']?.numericValue || 0)
+        },
+        opportunities,
+        fetchedAt: new Date().toISOString()
+    };
+}
+/**
+ * Fetch real Google Autocomplete suggestions for a keyword
+ * This is FREE and requires no API key
+ */
+async function fetchGoogleAutocomplete(keyword) {
+    try {
+        const queries = [
+            keyword,
+            `${keyword} cost`,
+            `${keyword} worth it`,
+            `${keyword} vs`,
+            `how much ${keyword}`,
+            `what is ${keyword}`,
+            `best ${keyword}`,
+            `${keyword} reviews`
+        ];
+        const allSuggestions = [];
+        for (const query of queries.slice(0, 4)) { // Limit to 4 to be fast
+            try {
+                const url = `https://suggestqueries.google.com/complete/search?client=firefox&q=${encodeURIComponent(query)}`;
+                const response = await fetch(url, {
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    if (Array.isArray(data) && Array.isArray(data[1])) {
+                        allSuggestions.push(...data[1].filter((s) => s.includes('?') || s.length > 20));
+                    }
+                }
+            }
+            catch (e) {
+                // Silently continue on individual failures
+            }
+        }
+        return [...new Set(allSuggestions)].slice(0, 10);
+    }
+    catch (error) {
+        console.log('[PAA] Autocomplete fetch failed, using fallback');
+        return [];
+    }
+}
+/**
+ * Generate PAA-style questions based on keyword patterns
+ * Fallback when autocomplete doesn't return enough questions
+ */
+function generatePAAQuestions(keyword) {
+    const patterns = [
+        `What is the average cost of ${keyword}?`,
+        `Is ${keyword} worth the money?`,
+        `Which company offers the best ${keyword}?`,
+        `How do I choose ${keyword}?`,
+        `What does ${keyword} cover?`,
+        `Are there any ${keyword} that cover pre-existing conditions?`,
+        `How much is ${keyword} per month?`,
+        `What is not covered by ${keyword}?`,
+        `When should I get ${keyword}?`,
+        `Can I get ${keyword} for an older pet?`
+    ];
+    return patterns;
+}
+/**
+ * Fetch real "People Also Ask" style questions for SEO optimization
+ * Combines Google Autocomplete + intelligent generation
+ */
+async function fetchPAAQuestions(keyword) {
+    const questions = [];
+    // Try Google Autocomplete first (real data)
+    const autocomplete = await fetchGoogleAutocomplete(keyword);
+    // Filter for question-like suggestions
+    const questionWords = ['how', 'what', 'which', 'is', 'are', 'does', 'do', 'can', 'should', 'why', 'when', 'where'];
+    for (const suggestion of autocomplete) {
+        const lower = suggestion.toLowerCase();
+        if (questionWords.some(w => lower.startsWith(w)) || suggestion.includes('?')) {
+            questions.push({ question: suggestion, source: 'autocomplete' });
+        }
+    }
+    // Add generated questions if we don't have enough
+    if (questions.length < 8) {
+        const generated = generatePAAQuestions(keyword);
+        for (const q of generated) {
+            if (questions.length >= 8)
+                break;
+            if (!questions.some(existing => existing.question.toLowerCase() === q.toLowerCase())) {
+                questions.push({ question: q, source: 'generated' });
+            }
+        }
+    }
+    console.log(`[PAA] Found ${questions.filter(q => q.source === 'autocomplete').length} real questions, ${questions.filter(q => q.source === 'generated').length} generated`);
+    return questions.slice(0, 8);
+}
+// ============================================================================
+// GitHub Copilot SDK Integration (True SDK, not CLI wrapper)
+// Uses CopilotClient -> createSession() -> sendAndWait()
+// ============================================================================
+let CopilotClientClass = null;
+let defineTool = null;
+let sdkLoaded = false;
+let sdkError = null;
+/**
+ * Search YouTube for relevant videos
+ * Calls Python script that uses youtube_search library (no API key needed)
+ */
+async function searchYouTubeVideo(keyword) {
+    try {
+        const scriptPath = path.resolve(process.cwd(), 'src/services/youtube-search.py');
+        const result = await new Promise((resolve, reject) => {
+            const child = (0, child_process_1.spawn)('python3', [scriptPath, keyword], {
+                stdio: ['pipe', 'pipe', 'pipe']
+            });
+            let stdout = '';
+            let stderr = '';
+            child.stdout.on('data', (data) => { stdout += data.toString(); });
+            child.stderr.on('data', (data) => { stderr += data.toString(); });
+            const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('YouTube search timeout after 15s')); }, 15000);
+            child.on('close', (code) => { clearTimeout(timer); if (code === 0)
+                resolve(stdout);
+            else
+                reject(new Error(`YouTube search exited ${code}: ${stderr}`)); });
+            child.on('error', (err) => { clearTimeout(timer); reject(err); });
+        });
+        return JSON.parse(result.trim());
+    }
+    catch (error) {
+        console.log(`⚠️ [YouTube] Search failed for "${keyword}":`, error.message);
+        return { success: false, error: error.message };
+    }
+}
+// ============================================================================
+// V3 Video Search Funnel - 5-Level Relevance-Based Video Discovery
+// See .github/skills/video-search-funnel/SKILL.md for full specification
+// ============================================================================
+const CATEGORY_SEARCH_TERMS = {
+    'cat-food-delivery-services': ['best cat food brands review', 'cat food review', 'healthy cat food guide'],
+    'cat-trees-furniture': ['cat tree review', `best cat trees ${CURRENT_YEAR}`, 'cat furniture tour'],
+    'cat-dna-testing': ['cat DNA test results', 'cat breed test review', 'cat genetics explained'],
+    'cat-grooming': ['cat grooming tutorial', 'how to groom cat at home', 'cat brushing tips'],
+    'cat-litter-boxes': ['best cat litter box review', 'self cleaning litter box', 'cat litter comparison'],
+    'cat-health': ['cat health tips vet', 'cat wellness check', 'healthy cat signs'],
+    'cat-nutrition': ['cat nutrition guide', 'what to feed your cat', 'cat diet tips'],
+    'cat-toys': ['best cat toys review', 'interactive cat toys', 'cat toy comparison'],
+    'cat-beds': ['best cat beds review', 'cozy cat bed tour', 'cat sleeping spots'],
+    'cat-carriers': ['cat carrier review', 'best cat carrier travel', 'cat travel tips'],
+    'cat-trees-condos': ['cat condo review', `best cat condos ${CURRENT_YEAR}`, 'cat climbing tower'],
+};
+const FUNNY_CAT_CONTEXT_ACTIONS = {
+    'cat-food-delivery-services': ['eating', 'food reaction', 'treats', 'hungry cat'],
+    'cat-nutrition': ['eating', 'food', 'mealtime', 'treats reaction'],
+    'cat-trees-furniture': ['climbing', 'jumping', 'falling off tree', 'tower fails'],
+    'cat-trees-condos': ['climbing fails', 'jumping', 'cat tower', 'climbing'],
+    'cat-beds': ['sleeping', 'napping', 'cozy', 'bed fails'],
+    'cat-grooming': ['bath time', 'grooming fails', 'brushing reaction', 'spa day'],
+    'cat-litter-boxes': ['bathroom', 'litter box', 'digging'],
+    'cat-dna-testing': ['breed reveal', 'personality', 'smart cat'],
+    'cat-health': ['vet visit', 'medicine time', 'check up'],
+    'DEFAULT': [`compilation ${CURRENT_YEAR}`, 'fails', 'cute moments', 'being weird'],
+};
+const CATEGORY_CONTENT_DATA = {
+    'cat-automatic-litter-box-cleaners': {
+        author: {
+            name: 'Dr. Jennifer Adams',
+            title: 'Pet Product Reviewer',
+            credentials: 'DVM, 12+ years reviewing cat products',
+            bio: 'Veterinarian and expert product reviewer specializing in cat hygiene and automated pet products.'
+        },
+        brands: ['Litter-Robot 4', 'PetSafe ScoopFree', 'Whisker Litter-Robot', 'CatGenie', 'PetKit Pura Max'],
+        comparisonHeaders: ['Product', 'Price', 'Noise Level', 'Capacity', 'Smart Features'],
+        comparisonRows: [
+            ['Litter-Robot 4', '$699', '< 40 dB', '8+ lbs cats', 'WiFi, App, Health Tracking'],
+            ['PetSafe ScoopFree', '$189', '< 45 dB', '15 lbs cats', 'Crystal Trays, Odor Control'],
+            ['CatGenie', '$549', '< 50 dB', '6+ lbs cats', 'Self-Washing, Flushable'],
+            ['PetKit Pura Max', '$449', '< 38 dB', '18 lbs cats', 'App Control, Deodorizer'],
+            ['Whisker Litter-Robot 3', '$499', '< 42 dB', '7+ lbs cats', 'WiFi, Night Light']
+        ],
+        imageAltTemplates: ['automatic litter box {keyword}', 'self-cleaning litter box {keyword}', 'cat using automatic litter box'],
+        imageCaptions: ['Modern automatic litter box for hassle-free cleaning.', 'Self-cleaning technology keeps your home fresh.', 'Smart litter box with app connectivity.'],
+        faqTemplates: [
+            { question: 'What is {keyword}?', answerHint: 'Definition and how it works' },
+            { question: 'How much does {keyword} cost?', answerHint: 'Price ranges $189-$699' },
+            { question: 'Is {keyword} worth the investment?', answerHint: 'Time savings vs cost analysis' },
+            { question: 'How loud is {keyword}?', answerHint: 'Decibel levels 38-50 dB' },
+            { question: 'What size cats can use {keyword}?', answerHint: 'Weight limits by model' },
+            { question: 'How often should I clean {keyword}?', answerHint: 'Maintenance schedule' },
+            { question: 'Do cats like {keyword}?', answerHint: 'Transition tips and acceptance rates' },
+            { question: 'What litter works best with {keyword}?', answerHint: 'Clumping vs crystal litter compatibility' }
+        ],
+        externalLinks: [
+            { url: 'https://www.litter-robot.com', text: 'Litter-Robot Official', context: 'Link in comparison section' },
+            { url: 'https://www.petsafe.net', text: 'PetSafe Official', context: 'Link in comparison section' },
+            { url: 'https://www.petkit.com', text: 'PetKit Official', context: 'Link in comparison section' }
+        ]
+    },
+    'cat-trees-furniture': {
+        author: {
+            name: 'Sarah Thompson',
+            title: 'Cat Behavior Specialist',
+            credentials: 'CCBC, 15+ years in feline enrichment',
+            bio: 'Certified cat behavior consultant specializing in feline environmental enrichment and cat furniture design.'
+        },
+        brands: ['Frisco', 'Feandrea', 'Go Pet Club', 'Armarkat', 'TRIXIE'],
+        comparisonHeaders: ['Brand', 'Price Range', 'Height', 'Weight Capacity', 'Key Features'],
+        comparisonRows: [
+            ['Frisco', '$50-200', '48-72"', '40+ lbs', 'Sisal Posts, Condos, Platforms'],
+            ['Feandrea', '$60-180', '54-67"', '35+ lbs', 'Multi-Level, Hammocks, Caves'],
+            ['Go Pet Club', '$80-250', '50-77"', '45+ lbs', 'Ladders, Baskets, Scratching Posts'],
+            ['Armarkat', '$40-160', '50-78"', '30+ lbs', 'Fleece Covering, Perches'],
+            ['TRIXIE', '$100-300', '48-65"', '50+ lbs', 'Scratching Surfaces, Toys']
+        ],
+        imageAltTemplates: ['cat tree {keyword}', 'cat furniture {keyword}', 'cat climbing tower {keyword}'],
+        imageCaptions: ['Multi-level cat tree for active cats.', 'Premium cat furniture with scratching posts.', 'Cozy cat condo for rest and play.'],
+        faqTemplates: [
+            { question: 'What is {keyword}?', answerHint: 'Definition and benefits' },
+            { question: 'How much does {keyword} cost?', answerHint: 'Price ranges $40-$300' },
+            { question: 'What height {keyword} is best?', answerHint: 'Based on cat size and room space' },
+            { question: 'How to choose {keyword} for multiple cats?', answerHint: 'Platforms and weight capacity' },
+            { question: 'How to assemble {keyword}?', answerHint: 'Tools and time needed' },
+            { question: 'How durable is {keyword}?', answerHint: 'Materials and lifespan' },
+            { question: 'Can {keyword} tip over?', answerHint: 'Stability and anchoring tips' },
+            { question: 'What features matter most in {keyword}?', answerHint: 'Scratching posts, perches, condos' }
+        ],
+        externalLinks: [
+            { url: 'https://www.chewy.com/b/cat-trees-condos-scratchers-312', text: 'Chewy Cat Trees', context: 'Link in comparison section' },
+            { url: 'https://www.amazon.com/cat-trees', text: 'Amazon Cat Trees', context: 'Link in comparison section' },
+            { url: 'https://www.petco.com/shop/en/petcostore/category/cat/cat-furniture', text: 'Petco Cat Furniture', context: 'Link in comparison section' }
+        ]
+    },
+    'cat-dna-testing': {
+        author: {
+            name: 'Dr. Sarah Mitchell',
+            title: 'Feline Geneticist',
+            credentials: 'PhD in Animal Genetics',
+            bio: 'Expert in feline genetics and cat DNA testing with over 10 years of research experience.'
+        },
+        brands: ['Basepaws', 'Wisdom Panel', 'Orivet', 'MyCatDNA', 'Optimal Selection'],
+        comparisonHeaders: ['Provider', 'Price', 'Breeds Tested', 'Health Markers', 'Turnaround'],
+        comparisonRows: [
+            ['Basepaws', '$129-299', '21+ breeds', '40+ markers', '4-6 weeks'],
+            ['Wisdom Panel', '$99-159', '70+ breeds', '25+ markers', '2-3 weeks'],
+            ['Orivet', '$95-145', '18+ breeds', '200+ markers', '2-3 weeks'],
+            ['MyCatDNA', '$89', '22+ breeds', '40+ markers', '3-4 weeks'],
+            ['Optimal Selection', '$99', '28 breeds', '40+ markers', '2-3 weeks']
+        ],
+        imageAltTemplates: ['cat DNA testing {keyword}', 'feline genetics {keyword}', 'cat breed test {keyword}'],
+        imageCaptions: ['Understanding your cat\'s genetic makeup.', 'DNA testing reveals breed and health insights.', 'Discover your cat\'s unique genetic story.'],
+        faqTemplates: [
+            { question: 'What is {keyword}?', answerHint: 'Definition and how DNA tests work' },
+            { question: 'How much does {keyword} cost?', answerHint: 'Price ranges $89-$299' },
+            { question: 'How accurate is {keyword}?', answerHint: 'Accuracy stats 95%+' },
+            { question: 'Which is best for {keyword}?', answerHint: 'Top recommendation' },
+            { question: 'How long do {keyword} results take?', answerHint: 'Turnaround 2-6 weeks' },
+            { question: 'Is {keyword} worth it?', answerHint: 'Value analysis' },
+            { question: 'What breeds can be detected?', answerHint: 'Number of breeds detected' },
+            { question: 'Are there health insights?', answerHint: 'Health markers overview' }
+        ],
+        externalLinks: [
+            { url: 'https://basepaws.com', text: 'Basepaws Cat DNA Test', context: 'Link in comparison section' },
+            { url: 'https://www.wisdompanel.com', text: 'Wisdom Panel', context: 'Link in comparison section' }
+        ]
+    },
+    'cat-food-delivery-services': {
+        author: {
+            name: 'Dr. Amanda Chen',
+            title: 'Veterinary Nutritionist',
+            credentials: 'DVM, Diplomate ACVN',
+            bio: 'Board-certified veterinary nutritionist specializing in feline dietary needs and premium cat food.'
+        },
+        brands: ['Smalls', 'The Farmer\'s Dog', 'Nom Nom', 'Ollie', 'Open Farm'],
+        comparisonHeaders: ['Brand', 'Price/Day', 'Food Type', 'Delivery Frequency', 'Key Features'],
+        comparisonRows: [
+            ['Smalls', '$2-4/day', 'Fresh/Freeze-Dried', 'Bi-weekly', 'Human-Grade, Cat-Specific'],
+            ['Nom Nom', '$3-6/day', 'Fresh Cooked', 'Weekly', 'Vet-Formulated, Portioned'],
+            ['Ollie', '$2-5/day', 'Fresh Cooked', 'Bi-weekly', 'Human-Grade, Custom Recipes'],
+            ['The Farmer\'s Dog', '$2-6/day', 'Fresh Cooked', 'Bi-weekly', 'Human-Grade, USDA Certified'],
+            ['Open Farm', '$1-3/day', 'Dry/Wet', 'Monthly', 'Ethically Sourced, Sustainable']
+        ],
+        imageAltTemplates: ['cat food delivery {keyword}', 'fresh cat food {keyword}', 'premium cat food subscription {keyword}'],
+        imageCaptions: ['Fresh cat food delivered to your door.', 'Premium cat nutrition made easy.', 'Healthy meals for your feline friend.'],
+        faqTemplates: [
+            { question: 'What is {keyword}?', answerHint: 'Definition and how it works' },
+            { question: 'How much does {keyword} cost?', answerHint: 'Price ranges $1-$6/day' },
+            { question: 'Is {keyword} worth it?', answerHint: 'Quality vs convenience analysis' },
+            { question: 'How often is {keyword} delivered?', answerHint: 'Delivery schedules' },
+            { question: 'Is {keyword} healthy for cats?', answerHint: 'Nutritional benefits' },
+            { question: 'Can I customize {keyword}?', answerHint: 'Customization options' },
+            { question: 'How long does {keyword} stay fresh?', answerHint: 'Storage and shelf life' },
+            { question: 'Which {keyword} is best for picky eaters?', answerHint: 'Taste preferences' }
+        ],
+        externalLinks: [
+            { url: 'https://www.smalls.com', text: 'Smalls Cat Food', context: 'Link in comparison section' },
+            { url: 'https://www.nomnomnow.com', text: 'Nom Nom Fresh Pet Food', context: 'Link in comparison section' }
+        ]
+    },
+    'DEFAULT': {
+        author: {
+            name: 'Lisa Park',
+            title: 'Cat Care Expert',
+            credentials: 'CPDT-KA, 10+ years in pet care',
+            bio: 'Professional cat care specialist with expertise in feline wellness and product recommendations.'
+        },
+        brands: ['Top Brand 1', 'Top Brand 2', 'Top Brand 3', 'Top Brand 4', 'Top Brand 5'],
+        comparisonHeaders: ['Brand', 'Price', 'Features', 'Quality', 'Rating'],
+        comparisonRows: [
+            ['Top Brand 1', '$50-100', 'Premium Features', 'High', '4.8/5'],
+            ['Top Brand 2', '$40-80', 'Standard Features', 'Good', '4.5/5'],
+            ['Top Brand 3', '$60-120', 'Advanced Features', 'High', '4.7/5'],
+            ['Top Brand 4', '$30-60', 'Basic Features', 'Standard', '4.2/5'],
+            ['Top Brand 5', '$70-150', 'Pro Features', 'Premium', '4.9/5']
+        ],
+        imageAltTemplates: ['cat product {keyword}', 'cat care {keyword}', 'cat supplies {keyword}'],
+        imageCaptions: ['Quality cat products for your feline.', 'Expert-recommended cat supplies.', 'The best in cat care.'],
+        faqTemplates: [
+            { question: 'What is {keyword}?', answerHint: 'Definition and overview' },
+            { question: 'How much does {keyword} cost?', answerHint: 'Price range overview' },
+            { question: 'Is {keyword} worth it?', answerHint: 'Value analysis' },
+            { question: 'What are the best options for {keyword}?', answerHint: 'Top recommendations' },
+            { question: 'How to choose {keyword}?', answerHint: 'Selection criteria' },
+            { question: 'Where to buy {keyword}?', answerHint: 'Purchase options' },
+            { question: 'How does {keyword} compare?', answerHint: 'Comparison overview' },
+            { question: 'What should I know about {keyword}?', answerHint: 'Key considerations' }
+        ],
+        externalLinks: [
+            { url: 'https://www.chewy.com', text: 'Chewy', context: 'Link in comparison section' },
+            { url: 'https://www.petco.com', text: 'Petco', context: 'Link in comparison section' }
+        ]
+    }
+};
+function getCategoryContentData(categorySlug) {
+    const normalizedSlug = categorySlug.toLowerCase()
+        .replace(/&amp;/g, '')
+        .replace(/&/g, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '')
+        .replace(/-+/g, '-');
+    return CATEGORY_CONTENT_DATA[normalizedSlug] || CATEGORY_CONTENT_DATA['DEFAULT'];
+}
+async function fetchAmazonProductsForKeyword(keyword, category = 'All') {
+    const emptyResult = {
+        products: [],
+        comparisonRows: [],
+        productSchemaItems: [],
+        promptText: ''
+    };
+    // Helper: convert raw product list to AmazonProductData format
+    function formatProductData(rawProducts) {
+        const products = rawProducts.map(p => ({
+            name: p.title.length > 60 ? p.title.substring(0, 57) + '...' : p.title,
+            price: p.price,
+            priceValue: p.priceValue || 0,
+            asin: p.asin,
+            url: p.detailPageUrl || p.url || `https://www.amazon.com/dp/${p.asin}?tag=${amazon_products_1.AMAZON_TAG}`,
+            rating: p.rating ? `${p.rating}/5` : '4.5/5',
+            features: p.features?.slice(0, 2).join('; ') || 'Premium quality',
+            amazonSearch: p.title.replace(/[^a-zA-Z0-9\s]/g, '').split(' ').slice(0, 5).join('+')
+        }));
+        const comparisonRows = products.map(p => [
+            p.name, p.price, p.features, p.rating, p.amazonSearch
+        ]);
+        const productSchemaItems = products.map((p, index) => ({
+            "@type": "ListItem",
+            "position": index + 1,
+            "item": {
+                "@type": "Product",
+                "name": p.name,
+                "description": `${p.name} - ${p.features}`,
+                "sku": p.asin,
+                "offers": {
+                    "@type": "Offer",
+                    "price": p.priceValue.toString(),
+                    "priceCurrency": "USD",
+                    "availability": "https://schema.org/InStock",
+                    "url": p.url
+                },
+                "aggregateRating": p.rating ? {
+                    "@type": "AggregateRating",
+                    "ratingValue": p.rating.replace('/5', ''),
+                    "bestRating": "5"
+                } : undefined
+            }
+        }));
+        const promptText = `
+REAL AMAZON PRODUCTS (USE THESE EXACT PRODUCTS IN YOUR COMPARISON TABLE):
+${products.map((p, i) => `${i + 1}. "${p.name}" - ${p.price} - ASIN: ${p.asin}
+   Features: ${p.features}
+   Rating: ${p.rating}
+   Amazon URL: ${p.url}`).join('\n')}
+
+IMPORTANT: Use these EXACT product names and prices in your comparisonTable. Do NOT make up products.
+`;
+        return { products, comparisonRows, productSchemaItems, promptText };
+    }
+    // Tier 1: Apify Amazon Crawler (fast, reliable)
+    if ((0, apify_amazon_1.isApifyAvailable)()) {
+        try {
+            console.log(`[Amazon] Tier 1: Fetching via Apify for: "${keyword}"`);
+            const apifyProducts = await (0, apify_amazon_1.searchProductsViaApify)(keyword, 3);
+            if (apifyProducts.length > 0) {
+                console.log(`[Amazon] Tier 1: Found ${apifyProducts.length} products via Apify`);
+                return formatProductData(apifyProducts.map(p => ({
+                    title: p.title,
+                    price: p.price,
+                    priceValue: 0,
+                    asin: p.asin,
+                    detailPageUrl: p.url,
+                    rating: p.rating,
+                    features: []
+                })));
+            }
+            console.log(`[Amazon] Tier 1: No products found via Apify`);
+        }
+        catch (error) {
+            console.warn(`[Amazon] Tier 1 (Apify) failed: ${error.message}`);
+        }
+    }
+    else {
+        console.log(`[Amazon] Tier 1: Apify not available (no APIFY_TOKEN), skipping to Tier 2`);
+    }
+    // Tier 2: Amazon Creators API fallback
+    try {
+        console.log(`[Amazon] Tier 2: Trying Creators API for: "${keyword}"`);
+        const result = await (0, amazon_products_1.searchAmazonProducts)(keyword, category, 3);
+        if (result.products && result.products.length > 0) {
+            console.log(`[Amazon] Tier 2: Found ${result.products.length} products via Creators API`);
+            return formatProductData(result.products);
+        }
+        console.log(`[Amazon] Tier 2: No products found via Creators API`);
+    }
+    catch (error) {
+        console.warn(`[Amazon] Tier 2 (Creators API) failed: ${error.message}`);
+    }
+    console.log(`[Amazon] All tiers exhausted for: "${keyword}"`);
+    return emptyResult;
+}
+/**
+ * Get category-specific product guidance for the AI
+ * This helps the AI understand what types of real products exist for each category
+ * WITHOUT hardcoding specific products - the AI uses its training knowledge
+ */
+function getCategoryProductExamples(categorySlug, keyword) {
+    const categoryGuidance = {
+        'cat-carriers-travel-products': `
+For CAT CARRIERS, popular brands include: Sherpa, Petmate, Sleepypod, Catit, Bergan, AmazonBasics, Necoichi, Mr. Peanut's.
+Example product format: "Sherpa Original Deluxe Pet Carrier - Medium" with price ~$40-60
+Consider: airline-approved carriers, soft-sided vs hard-sided, backpack carriers, expandable carriers.`,
+        'cat-calming-anxiety-products': `
+For CAT CALMING PRODUCTS, popular brands include: Feliway, Comfort Zone, ThunderEase, Pet Naturals, VetriScience, Zesty Paws, NaturVet.
+Example product format: "Feliway Classic Calming Diffuser Starter Kit" with price ~$25-40
+Consider: pheromone diffusers, calming collars, treats/chews, sprays, supplements.`,
+        'cat-litter-boxes': `
+For CAT LITTER BOXES, popular brands include: Litter-Robot, PetSafe, Nature's Miracle, Catit, Van Ness, Petmate, IRIS USA, Modkat.
+Example product format: "IRIS USA Top Entry Cat Litter Box" with price ~$25-45
+Consider: covered/hooded, top-entry, self-cleaning/automatic, high-sided, corner designs.`,
+        'cat-automatic-litter-box-cleaners': `
+For AUTOMATIC LITTER BOXES, popular brands include: Litter-Robot, PetSafe ScoopFree, CatGenie, PetKit, Whisker, Casa Leo.
+Example product format: "Litter-Robot 4 Automatic Self-Cleaning Litter Box" with price ~$500-700
+Consider: WiFi-enabled, health tracking, multiple cat capacity, noise level, maintenance.`,
+        'cat-trees-furniture': `
+For CAT TREES & FURNITURE, popular brands include: Frisco, Feandrea, Go Pet Club, Armarkat, TRIXIE, Yaheetech, Hey-brother.
+Example product format: "Frisco 72-Inch Cat Tree with Hammock" with price ~$80-150
+Consider: height, weight capacity, scratching posts, condos, platforms, hammocks.`,
+        'cat-dna-testing': `
+For CAT DNA TESTS, popular brands include: Basepaws, Wisdom Panel, Orivet, MyCatDNA, Optimal Selection.
+Example product format: "Basepaws Cat DNA Test Kit - Breed + Health" with price ~$129-199
+Consider: breeds detected, health markers, turnaround time, accuracy.`,
+        'cat-food-delivery-services': `
+For CAT FOOD DELIVERY, popular brands include: Smalls, Nom Nom, Ollie, The Farmer's Dog, Open Farm, Tiki Cat, Weruva.
+Example product format: "Smalls Fresh Cat Food Subscription - Chicken Recipe" with price ~$2-5/day
+Consider: fresh vs freeze-dried, subscription frequency, customization, ingredients.`,
+        'cat-toys-interactive': `
+For INTERACTIVE CAT TOYS, popular brands include: Kong, Catit, SmartyKat, Petstages, PetFusion, Frisco, Potaroma, BENTOPAL.
+Example product format: "Catit Senses 2.0 Digger Interactive Cat Toy" with price ~$15-30
+Consider: electronic toys, laser toys, feather wands, puzzle toys, ball tracks, motion-activated toys.`,
+        'cat-grooming-tools': `
+For CAT GROOMING TOOLS, popular brands include: Furminator, Hertzko, Safari, Chris Christensen, JW Pet, Li'l Pals, Burt's Bees, Wahl.
+Example product format: "Furminator Undercoat Deshedding Tool for Cats" with price ~$20-35
+Consider: deshedding tools, slicker brushes, nail clippers, grooming gloves, dematting combs, bathing supplies.`,
+        'cat-travel-accessories': `
+For CAT TRAVEL ACCESSORIES, popular brands include: Sleepypod, Sturdibag, Pet Gear, Sherpa, Catit, MidWest, petisfam, Lil Back Bracer.
+Example product format: "Sleepypod Mobile Pet Bed & Carrier" with price ~$100-200
+Consider: carriers, car seats, travel litter boxes, harnesses, water bottles, portable bowls, anxiety wraps.`,
+        'cat-training-products': `
+For CAT TRAINING PRODUCTS, popular brands include: PetSafe, SSSCat, Karen Pryor, Catit, SmartCat, Downtown Pet Supply, Frisco.
+Example product format: "PetSafe SSSCAT Motion-Activated Spray Deterrent" with price ~$20-40
+Consider: clicker trainers, deterrent sprays, scratching post trainers, treat dispensers, training pads.`,
+        'cat-senior-care': `
+For CAT SENIOR CARE, popular brands include: Cosequin, Feliway, PetFusion, K&H Pet Products, Purina Pro Plan, Hill's Science Diet, VetriScience.
+Example product format: "Cosequin Joint Health Supplement for Cats" with price ~$15-30
+Consider: joint supplements, heated beds, orthopedic beds, senior food, water fountains, ramps, calming aids.`,
+        'cat-dental-care': `
+For CAT DENTAL CARE, popular brands include: Virbac, Greenies, TropiClean, Oxyfresh, Petsmile, Arm & Hammer, Vet's Best.
+Example product format: "Virbac C.E.T. Enzymatic Cat Toothpaste" with price ~$10-20
+Consider: toothpaste, toothbrushes, dental treats, water additives, dental wipes, plaque removers.`,
+        'cat-outdoor-enclosures': `
+For CAT OUTDOOR ENCLOSURES, popular brands include: Outback Jack, Kittywalk, PawHut, Aivituvin, COZIWOW, Petmate, Prevue Pet.
+Example product format: "Kittywalk Penthouse Outdoor Cat Enclosure" with price ~$100-300
+Consider: catios, window box enclosures, tunnel systems, portable playpens, DIY kits, weatherproof enclosures.`,
+        'cat-puzzle-feeders': `
+For CAT PUZZLE FEEDERS, popular brands include: Catit Senses, Trixie, Doc & Phoebe, LickiMat, Nina Ottosson, PetSafe, Frisco.
+Example product format: "Trixie 5-in-1 Activity Center for Cats" with price ~$15-35
+Consider: slow feeders, food puzzles, treat dispensers, lick mats, snuffle mats, foraging toys.`,
+        'cat-calming-products': `
+For CAT CALMING PRODUCTS, popular brands include: Feliway, ThunderEase, Pet Naturals, Zesty Paws, NaturVet, Comfort Zone, Rescue Remedy.
+Example product format: "Feliway Classic Calming Diffuser Kit" with price ~$20-40
+Consider: pheromone diffusers, calming collars, anxiety treats, calming sprays, supplements, thunder shirts.`,
+        'cat-subscription-boxes': `
+For CAT SUBSCRIPTION BOXES, popular brands include: KitNipBox, meowbox, CatLadyBox, Rescue Box, The Catnip Times, PetGiftBox.
+Example product format: "KitNipBox Happy Cat Monthly Subscription" with price ~$20-35/month
+Consider: toy boxes, treat boxes, themed boxes, multi-cat options, eco-friendly boxes, luxury boxes.`,
+        'DEFAULT': `
+For "${keyword}", think of the TOP 5 most popular products sold on Amazon for this category.
+Use your knowledge of real brands and products that cat owners actually buy.
+Include a mix of premium and budget-friendly options with realistic prices.`
+    };
+    const slug = categorySlug.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+    return categoryGuidance[slug] || categoryGuidance['DEFAULT'];
+}
+function buildFallbackComparisonTable(categorySlug, keyword) {
+    const amazonTag = process.env.AMAZON_AFFILIATE_TAG || 'catsluvus03-20';
+    const fallbackProducts = {
+        'cat-senior-care': [
+            ['Cosequin Joint Health Supplement for Cats', '$14.99', 'Glucosamine & chondroitin, sprinkle capsule, #1 vet recommended', '4.6'],
+            ['Purina Pro Plan Senior Cat Food - Chicken', '$24.99', 'High protein, real chicken, supports immune health, easy digest', '4.7'],
+            ['K&H Pet Products Heated Cat Bed', '$39.99', 'Orthopedic foam, 6-watt heater, machine washable, indoor use', '4.5'],
+            ['VetriScience Vetri Lysine Plus for Cats', '$12.99', 'Immune support, lysine supplement, chicken liver flavor, soft chews', '4.4'],
+            ['PetFusion BetterBox Non-Stick Litter Box', '$34.95', 'Low entry for seniors, non-stick coating, large size, easy clean', '4.3'],
+        ],
+        'cat-grooming-tools-kits': [
+            ['Furminator Undercoat Deshedding Tool for Cats', '$24.99', 'Reduces shedding up to 90%, stainless steel edge, ergonomic handle', '4.6'],
+            ['Hertzko Self-Cleaning Slicker Brush', '$15.99', 'Retractable bristles, gentle on skin, removes tangles & loose fur', '4.5'],
+            ['Safari Professional Nail Trimmer for Cats', '$6.99', 'Stainless steel, safety guard, non-slip grip, sharp precision', '4.4'],
+            ['Burt\'s Bees Waterless Cat Shampoo Spray', '$8.99', 'Natural ingredients, pH balanced, apple & rosemary, no rinse needed', '4.5'],
+            ['Pet Grooming Glove - Gentle Deshedding Brush', '$9.99', 'Five-finger design, gentle massage, works on all coat types', '4.3'],
+        ],
+        'cat-cameras-monitors': [
+            ['Petcube Cam Indoor Wi-Fi Pet Camera', '$39.99', '1080p HD, night vision, 2-way audio, motion alerts, free cloud', '4.3'],
+            ['Wyze Cam v3 Pet Camera', '$35.98', 'Color night vision, motion detection, 2-way audio, IP65 rated', '4.5'],
+            ['Furbo 360° Dog/Cat Camera with Treat Tossing', '$149.99', '360° view, treat tossing, barking alerts, 1080p, 2-way audio', '4.2'],
+            ['Blink Mini Indoor Smart Security Camera', '$29.99', '1080p HD, motion detection, 2-way audio, works with Alexa', '4.4'],
+            ['eufy Pet Camera with AI Tracking', '$39.99', '2K resolution, AI pet detection, 360° pan & tilt, local storage', '4.4'],
+        ],
+        'cat-insurance-plans': [
+            ['Lemonade Pet Insurance for Cats', '$10/mo', 'AI-powered claims, 90% reimbursement, customizable deductible', '4.5'],
+            ['Healthy Paws Cat Insurance', '$15/mo', 'No caps on payouts, fast claims, covers hereditary conditions', '4.7'],
+            ['Trupanion Cat Insurance', '$25/mo', 'Direct vet payment, 90% coverage, no payout limits per condition', '4.4'],
+            ['ASPCA Pet Health Insurance for Cats', '$12/mo', 'Wellness add-on, 10% multi-pet discount, customizable plans', '4.3'],
+            ['Embrace Pet Insurance for Cats', '$18/mo', 'Diminishing deductible, dental coverage, wellness rewards', '4.5'],
+        ],
+        'cat-harnesses-leashes': [
+            ['rabbitgoo Cat Harness and Leash Set', '$16.99', 'Escape-proof, adjustable, reflective strips, breathable mesh', '4.3'],
+            ['Kitty Holster Cat Harness', '$29.95', 'Undyed cotton, escape-proof, velcro closure, made in USA', '4.4'],
+            ['PetSafe Come With Me Kitty Harness', '$12.99', 'Bungee leash, shoulder/chest fit, gentle steering, lightweight', '4.2'],
+            ['Voyager Step-In Air Cat Harness', '$14.99', 'All-weather mesh, step-in design, reflective bands, breathable', '4.4'],
+            ['Catit Nylon Adjustable Cat Harness', '$9.99', 'Figure-8 design, lightweight nylon, adjustable girth, budget pick', '4.1'],
+        ],
+        'cat-carriers-travel-products': [
+            ['Sherpa Original Deluxe Pet Carrier - Medium', '$44.99', 'Airline-approved, mesh panels, machine washable, locking zippers', '4.5'],
+            ['Sleepypod Mobile Pet Bed & Carrier', '$189.99', 'Crash-tested, converts to bed, premium materials, safety certified', '4.6'],
+            ['Catit Cabrio Cat Carrier', '$29.99', 'Top & front loading, ventilated, easy clean, airline-compatible', '4.4'],
+            ['Pet Magasin Hard Cover Cat Carrier', '$29.99', 'Collapsible, top-load, ventilation holes, easy storage', '4.3'],
+            ['PetAmi Deluxe Cat Carrier Backpack', '$39.99', 'Ventilated design, safety buckle, padded straps, breathable mesh', '4.4'],
+        ],
+        'cat-litter-boxes': [
+            ['IRIS USA Top Entry Cat Litter Box', '$24.99', 'Top entry reduces tracking, includes scoop, grooved lid, large', '4.4'],
+            ['Modkat Flip Litter Box', '$54.99', 'Reusable liner, 3 lid positions, modern design, easy cleaning', '4.3'],
+            ['Nature\'s Miracle Hooded Corner Litter Box', '$19.99', 'Corner design saves space, charcoal filter, antimicrobial', '4.2'],
+            ['Van Ness Enclosed Cat Litter Pan', '$15.99', 'Odor-controlling door, replaceable filter, easy snap-on hood', '4.3'],
+            ['Petmate Booda Dome Cleanstep Litter Box', '$29.99', 'Dome shape, built-in staircase, reduces tracking, charcoal filter', '4.1'],
+        ],
+        'cat-toys-interactive': [
+            ['Catit Senses 2.0 Digger Interactive Cat Toy', '$16.99', 'Stimulates natural foraging, multiple difficulty tubes, easy clean', '4.4'],
+            ['SmartyKat Hot Pursuit Cat Toy', '$19.99', 'Concealed motion, erratic movement, 2 speeds, battery operated', '4.3'],
+            ['PetFusion Ambush Interactive Cat Toy', '$24.95', 'Electronic feather, random patterns, auto shutoff, timer modes', '4.3'],
+            ['Potaroma Flopping Fish Cat Toy', '$11.99', 'USB rechargeable, realistic motion, catnip included, plush', '4.2'],
+            ['BENTOPAL Automatic Cat Toy Ball', '$16.99', 'Smart obstacle avoidance, LED light, auto on/off, USB charging', '4.3'],
+        ],
+        'cat-trees-furniture': [
+            ['Frisco 72-Inch Cat Tree with Hammock', '$89.99', 'Multiple platforms, sisal posts, hammock, condo, large cats OK', '4.4'],
+            ['Feandrea 56-Inch Multi-Level Cat Tree', '$69.99', 'Plush perches, scratching posts, removable cover, sturdy base', '4.5'],
+            ['Go Pet Club 62-Inch Cat Tree', '$64.99', 'Faux fur, sisal rope posts, multiple condos, ladder, budget pick', '4.3'],
+            ['Armarkat Classic Cat Tree A7202', '$79.99', 'Pressed wood, faux fleece, multiple levels, 2 condos, durable', '4.4'],
+            ['TRIXIE Baza Cat Tree', '$49.99', 'Modern design, sisal wrapped, plush cushion, wall-mountable', '4.2'],
+        ],
+    };
+    const slug = categorySlug.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+    const products = fallbackProducts[slug];
+    if (products && products.length > 0) {
+        const rows = products.map(([name, price, features, rating]) => [
+            name, price, features, rating, name.replace(/[^a-zA-Z0-9\s]/g, '').split(' ').slice(0, 5).join('+')
+        ]);
+        return { headers: ['Product Name', 'Price', 'Key Features', 'Rating', 'Amazon Search'], rows };
+    }
+    const genericProducts = [
+        ['Top Rated Cat Product #1', '$24.99', 'Highly rated, vet recommended, premium quality', '4.5'],
+        ['Best Value Cat Product', '$14.99', 'Budget-friendly, great reviews, durable design', '4.3'],
+        ['Premium Cat Product', '$39.99', 'Professional grade, long-lasting, top seller', '4.6'],
+        ['Popular Cat Product Pick', '$19.99', 'Best seller, easy to use, cat-approved', '4.4'],
+        ['Editor\'s Choice Cat Product', '$29.99', 'Award-winning, innovative design, highly rated', '4.5'],
+    ];
+    const keywordTerms = keyword.replace(/[^a-zA-Z0-9\s]/g, '').split(' ').slice(0, 4).join('+');
+    const rows = genericProducts.map(([name, price, features, rating]) => [
+        name, price, features, rating, keywordTerms
+    ]);
+    return { headers: ['Product Name', 'Price', 'Key Features', 'Rating', 'Amazon Search'], rows };
+}
+const NEGATIVE_VIDEO_KEYWORDS = ['insurance', 'sad', 'death', 'died', 'rip', 'abuse', 'rescue abandoned', 'injured', 'scary', 'horror', 'attack', 'fight'];
+function parseDurationToSeconds(duration) {
+    if (!duration)
+        return 0;
+    const parts = duration.split(':').reverse();
+    let seconds = 0;
+    if (parts[0])
+        seconds += parseInt(parts[0], 10) || 0;
+    if (parts[1])
+        seconds += (parseInt(parts[1], 10) || 0) * 60;
+    if (parts[2])
+        seconds += (parseInt(parts[2], 10) || 0) * 3600;
+    return seconds;
+}
+const DOG_ONLY_REGEX = /\bdog(s)?\b/i;
+const CAT_REGEX = /\bcat(s)?\b/i;
+function isVideoRelevant(video, category) {
+    const title = video.title.toLowerCase();
+    if (category !== 'petinsurance' && (title.includes('insurance') || title.includes('pet insurance'))) {
+        return false;
+    }
+    if (DOG_ONLY_REGEX.test(title) && !CAT_REGEX.test(title)) {
+        return false;
+    }
+    for (const negWord of NEGATIVE_VIDEO_KEYWORDS) {
+        if (category !== 'petinsurance' && negWord === 'insurance')
+            continue;
+        if (title.includes(negWord)) {
+            return false;
+        }
+    }
+    if (video.viewCount && video.viewCount < 500) {
+        return false;
+    }
+    const durationSecs = parseDurationToSeconds(video.duration);
+    if (durationSecs > 0 && durationSecs < 30) {
+        return false;
+    }
+    return true;
+}
+function isFunnyVideoValid(video) {
+    const title = video.title.toLowerCase();
+    if (title.includes('insurance') || title.includes('pet insurance')) {
+        return false;
+    }
+    if (DOG_ONLY_REGEX.test(title) && !CAT_REGEX.test(title)) {
+        return false;
+    }
+    for (const negWord of NEGATIVE_VIDEO_KEYWORDS) {
+        if (negWord === 'insurance')
+            continue;
+        if (title.includes(negWord)) {
+            return false;
+        }
+    }
+    if (video.viewCount && video.viewCount < 500) {
+        return false;
+    }
+    const durationSecs = parseDurationToSeconds(video.duration);
+    if (durationSecs > 0 && durationSecs < 30) {
+        return false;
+    }
+    return true;
+}
+async function searchVideoFunnel(keyword, category) {
+    const categorySlug = category.toLowerCase().replace(/\s+/g, '-');
+    const level1Query = keyword;
+    console.log(`[Video Funnel] L1: "${level1Query}"`);
+    let result = await searchYouTubeVideo(level1Query);
+    if (result.success && result.videos?.length) {
+        const relevant = result.videos.find(v => isVideoRelevant(v, categorySlug));
+        if (relevant) {
+            return { video: relevant, level: 1, searchQuery: level1Query, fallbackUsed: false };
+        }
+    }
+    const categoryTerms = categorySlug.replace(/-/g, ' ');
+    const level2Query = `${categoryTerms} ${keyword} review`;
+    console.log(`[Video Funnel] L2: "${level2Query}"`);
+    result = await searchYouTubeVideo(level2Query);
+    if (result.success && result.videos?.length) {
+        const relevant = result.videos.find(v => isVideoRelevant(v, categorySlug));
+        if (relevant) {
+            return { video: relevant, level: 2, searchQuery: level2Query, fallbackUsed: false };
+        }
+    }
+    const categorySearchTerms = CATEGORY_SEARCH_TERMS[categorySlug] || CATEGORY_SEARCH_TERMS['cat-health'] || [`cat care tips ${CURRENT_YEAR}`];
+    const level3Query = categorySearchTerms[0];
+    console.log(`[Video Funnel] L3: "${level3Query}"`);
+    result = await searchYouTubeVideo(level3Query);
+    if (result.success && result.videos?.length) {
+        const relevant = result.videos.find(v => isVideoRelevant(v, categorySlug));
+        if (relevant) {
+            return { video: relevant, level: 3, searchQuery: level3Query, fallbackUsed: false };
+        }
+    }
+    let broadTopic = 'cat care';
+    if (categorySlug.includes('food') || categorySlug.includes('nutrition'))
+        broadTopic = 'cat feeding guide';
+    else if (categorySlug.includes('tree') || categorySlug.includes('furniture') || categorySlug.includes('condo'))
+        broadTopic = 'cat furniture';
+    else if (categorySlug.includes('dna') || categorySlug.includes('breed'))
+        broadTopic = 'cat breeds explained';
+    else if (categorySlug.includes('health'))
+        broadTopic = 'cat wellness tips';
+    else if (categorySlug.includes('groom'))
+        broadTopic = 'cat grooming';
+    const level4Query = `${broadTopic} guide ${CURRENT_YEAR}`;
+    console.log(`[Video Funnel] L4: "${level4Query}"`);
+    result = await searchYouTubeVideo(level4Query);
+    if (result.success && result.videos?.length) {
+        const relevant = result.videos.find(v => isVideoRelevant(v, categorySlug));
+        if (relevant) {
+            return { video: relevant, level: 4, searchQuery: level4Query, fallbackUsed: false };
+        }
+    }
+    const contextActions = FUNNY_CAT_CONTEXT_ACTIONS[categorySlug] || FUNNY_CAT_CONTEXT_ACTIONS['DEFAULT'];
+    const funnyAction = contextActions[Math.floor(Math.random() * contextActions.length)];
+    const level5Query = `funny cat ${funnyAction}`;
+    console.log(`[Video Funnel] L5 (funny fallback): "${level5Query}"`);
+    result = await searchYouTubeVideo(level5Query);
+    if (result.success && result.videos?.length) {
+        const video = result.videos.find(v => isFunnyVideoValid(v));
+        if (video) {
+            return { video, level: 5, searchQuery: level5Query, fallbackUsed: true };
+        }
+    }
+    const ultimateFallback = `funny cats compilation ${CURRENT_YEAR}`;
+    console.log(`[Video Funnel] Ultimate fallback: "${ultimateFallback}"`);
+    result = await searchYouTubeVideo(ultimateFallback);
+    if (result.success && result.videos?.length) {
+        const video = result.videos.find(v => isFunnyVideoValid(v));
+        if (video) {
+            return { video, level: 5, searchQuery: ultimateFallback, fallbackUsed: true };
+        }
+    }
+    const lastResort = 'cute cats being cats';
+    console.log(`[Video Funnel] Last resort: "${lastResort}"`);
+    result = await searchYouTubeVideo(lastResort);
+    if (result.success && result.videos?.length) {
+        const video = result.videos.find(v => isFunnyVideoValid(v));
+        if (video) {
+            return { video, level: 5, searchQuery: lastResort, fallbackUsed: true };
+        }
+    }
+    const viralQueries = [
+        'funniest cat videos viral',
+        'most viewed cat videos all time',
+        'viral cat videos millions views',
+        'hilarious cats funny compilation'
+    ];
+    for (const viralQuery of viralQueries) {
+        console.log(`[Video Funnel] 🔥 Viral cat search: "${viralQuery}"`);
+        result = await searchYouTubeVideo(viralQuery);
+        if (result.success && result.videos?.length) {
+            const catVideos = result.videos.filter(v => CAT_REGEX.test(v.title));
+            if (catVideos.length > 0) {
+                const sortedByViews = catVideos.sort((a, b) => (b.viewCount || 0) - (a.viewCount || 0));
+                const topVideo = sortedByViews[0];
+                console.log(`[Video Funnel] ✅ Found viral cat video: "${topVideo.title}" (${topVideo.viewCount?.toLocaleString() || 'unknown'} views)`);
+                return { video: topVideo, level: 6, searchQuery: viralQuery, fallbackUsed: true };
+            }
+        }
+    }
+    console.log(`[Video Funnel] ⚠️ No cat video found after all searches - this should never happen`);
+    return { video: undefined, level: 0, searchQuery: '', fallbackUsed: false };
+}
+// Persistent client instance (reused across requests)
+let persistentClient = null;
+let clientStarting = false;
+/**
+ * Load the @github/copilot-sdk ESM module
+ */
+async function loadCopilotSDK() {
+    if (sdkLoaded) {
+        if (sdkError)
+            throw new Error(sdkError);
+        return { CopilotClient: CopilotClientClass, defineTool };
+    }
+    try {
+        // Dynamic import for ESM module from CommonJS
+        const importFn = new Function('specifier', 'return import(specifier)');
+        const sdk = await importFn('@github/copilot-sdk');
+        CopilotClientClass = sdk.CopilotClient;
+        defineTool = sdk.defineTool;
+        sdkLoaded = true;
+        console.log('✅ @github/copilot-sdk loaded successfully');
+        return { CopilotClient: CopilotClientClass, defineTool };
+    }
+    catch (error) {
+        sdkError = error.message;
+        sdkLoaded = true;
+        console.error('❌ Failed to load @github/copilot-sdk:', error.message);
+        throw error;
+    }
+}
+/**
+ * Get or create persistent CopilotClient instance
+ * The SDK manages the CLI subprocess internally via JSON-RPC
+ */
+async function getOrCreateClient() {
+    // Return existing client if running
+    if (persistentClient) {
+        const state = persistentClient.getState?.();
+        if (state === 'connected' || state === 'running') {
+            return persistentClient;
+        }
+    }
+    // Prevent concurrent initialization
+    if (clientStarting) {
+        // Wait for existing initialization
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return getOrCreateClient();
+    }
+    clientStarting = true;
+    try {
+        const { CopilotClient } = await loadCopilotSDK();
+        // Get GitHub token from the correct config directory
+        const { execSync } = require('child_process');
+        let ghToken;
+        try {
+            // Must exclude any existing GITHUB_TOKEN/GH_TOKEN env vars so gh CLI reads from config file
+            const cleanEnv = { ...process.env };
+            delete cleanEnv.GITHUB_TOKEN;
+            delete cleanEnv.GH_TOKEN;
+            delete cleanEnv.COPILOT_GITHUB_TOKEN;
+            ghToken = execSync('gh auth token', {
+                encoding: 'utf8',
+                env: {
+                    ...cleanEnv,
+                    GH_CONFIG_DIR: '/home/runner/workspace/.config/gh',
+                    HOME: '/home/runner'
+                }
+            }).trim();
+            console.log(`🔑 GitHub token acquired (${ghToken.length} chars, starts with ${ghToken.substring(0, 4)})`);
+        }
+        catch (e) {
+            throw new Error('GitHub auth required. Run: gh auth login');
+        }
+        // Set environment for the CLI subprocess that SDK spawns
+        process.env.GH_TOKEN = ghToken;
+        process.env.GITHUB_TOKEN = ghToken;
+        process.env.COPILOT_GITHUB_TOKEN = ghToken;
+        // Use the WORKSPACE config dir where gh is actually authenticated
+        process.env.GH_CONFIG_DIR = '/home/runner/workspace/.config/gh';
+        process.env.XDG_CONFIG_HOME = '/home/runner/workspace/.config';
+        process.env.HOME = '/home/runner';
+        // Create client - SDK spawns CLI subprocess internally
+        persistentClient = new CopilotClient({
+            cliPath: '/home/runner/workspace/node_modules/.bin/copilot',
+            autoStart: true,
+            autoRestart: true,
+            logLevel: 'error',
+            useStdio: true,
+        });
+        // Wait for client to be ready
+        await persistentClient.start();
+        console.log('✅ CopilotClient started (SDK manages CLI via JSON-RPC)');
+        return persistentClient;
+    }
+    finally {
+        clientStarting = false;
+    }
+}
+// Cloudflare KV Configuration
+const CLOUDFLARE_ACCOUNT_ID = 'bc8e15f958dc350e00c0e39d80ca6941';
+const CLOUDFLARE_KV_NAMESPACE_ID = 'bd3b856b2ae147ada9a8d236dd4baf30';
+const CLOUDFLARE_ZONE_ID = '646da2c86dbbe1dff196c155381b0704';
+// V3: Initialize Index Tracker with KV config (lazy init on first use)
+let indexTrackerInitialized = false;
+async function ensureIndexTrackerInitialized() {
+    if (indexTrackerInitialized)
+        return;
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (cfApiToken) {
+        (0, indexing_tracker_1.initKVConfig)(CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_KV_NAMESPACE_ID, cfApiToken);
+        await (0, indexing_tracker_1.initIndexTracker)();
+        indexTrackerInitialized = true;
+        console.log('[IndexTracker] Initialized with KV config');
+    }
+}
+const CLOUDFLARE_WORKER_NAME = 'petinsurance';
+// V3 has its own category tracking, independent from V2
+const CATEGORY_STATUS_PREFIX = 'v3:category:status:';
+// LEGACY V3 CATEGORIES - kept for route healing reference only
+// V3 now uses autonomous Copilot CLI discovery (no static list)
+const V3_LEGACY_CATEGORIES = [
+    'cat-toys-interactive',
+    'cat-grooming-tools',
+    'cat-travel-accessories',
+    'cat-training-products',
+    'cat-senior-care',
+    'cat-dental-care',
+    'cat-outdoor-enclosures',
+    'cat-puzzle-feeders',
+    'cat-calming-products',
+    'cat-subscription-boxes'
+];
+// V2 category status prefix - used to check what V2 has completed so V3 avoids overlap
+const V2_CATEGORY_STATUS_PREFIX = 'v2:category:status:';
+/**
+ * Get all V2 completed categories from KV to prevent V3 from overlapping
+ */
+async function getV2CompletedCategories() {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken)
+        return [];
+    const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/keys?prefix=${V2_CATEGORY_STATUS_PREFIX}`;
+    try {
+        const res = await fetch(url, { headers: { 'Authorization': `Bearer ${cfApiToken}` } });
+        if (!res.ok)
+            return [];
+        const data = await res.json();
+        return (data.result || []).map((key) => key.name.replace(V2_CATEGORY_STATUS_PREFIX, ''));
+    }
+    catch {
+        return [];
+    }
+}
+/**
+ * Get all V3 categories ever worked on (from KV status keys) - dynamic, not hardcoded
+ */
+async function getAllV3Categories() {
+    return await getAllCategoryStatusKeys();
+}
+// NO FALLBACK CATEGORIES - V3 uses fully autonomous discovery via Copilot CLI
+// See .github/skills/category-discovery/SKILL.md for discovery prompt standards
+// If discovery fails, system enters cooldown and logs error for manual review
+const discoveryState = {
+    failureCount: 0,
+    lastFailure: null,
+    cooldownUntil: null,
+    maxRetries: 3,
+    cooldownMinutes: 60,
+    loaded: false
+};
+const DISCOVERY_STATE_KEY = 'v3:discovery:state';
+async function loadDiscoveryState() {
+    if (discoveryState.loaded)
+        return;
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken) {
+        discoveryState.loaded = true;
+        return;
+    }
+    const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${DISCOVERY_STATE_KEY}`;
+    try {
+        const res = await fetch(url, { headers: { 'Authorization': `Bearer ${cfApiToken}` } });
+        if (res.ok) {
+            const saved = JSON.parse(await res.text());
+            discoveryState.failureCount = saved.failureCount || 0;
+            discoveryState.lastFailure = saved.lastFailure ? new Date(saved.lastFailure) : null;
+            discoveryState.cooldownUntil = saved.cooldownUntil ? new Date(saved.cooldownUntil) : null;
+        }
+    }
+    catch { }
+    discoveryState.loaded = true;
+}
+async function saveDiscoveryState() {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken)
+        return;
+    const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${DISCOVERY_STATE_KEY}`;
+    try {
+        await fetch(url, {
+            method: 'PUT',
+            headers: { 'Authorization': `Bearer ${cfApiToken}`, 'Content-Type': 'text/plain' },
+            body: JSON.stringify({
+                failureCount: discoveryState.failureCount,
+                lastFailure: discoveryState.lastFailure?.toISOString() || null,
+                cooldownUntil: discoveryState.cooldownUntil?.toISOString() || null
+            })
+        });
+    }
+    catch { }
+}
+async function saveCategoryStatus(category, status) {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken) {
+        console.error(`[SEO-V3] ❌ No CLOUDFLARE_API_TOKEN - cannot save category status for ${category}`);
+        return false;
+    }
+    const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${CATEGORY_STATUS_PREFIX}${category}`;
+    try {
+        const res = await fetch(url, {
+            method: 'PUT',
+            headers: { 'Authorization': `Bearer ${cfApiToken}`, 'Content-Type': 'text/plain' },
+            body: JSON.stringify(status)
+        });
+        if (!res.ok) {
+            const errText = await res.text().catch(() => 'unknown');
+            console.error(`[SEO-V3] ❌ KV PUT failed for ${category}: ${res.status} ${res.statusText} - ${errText}`);
+            addActivityLog('error', `[V3] KV save failed: ${category} (${res.status})`, { status: status.status });
+            return false;
+        }
+        console.log(`[SEO-V3] ✅ KV confirmed: ${CATEGORY_STATUS_PREFIX}${category} = ${status.status}`);
+        addActivityLog('info', `[V3] Category status saved: ${category}`, { status: status.status, articles: status.articleCount });
+        return true;
+    }
+    catch (error) {
+        console.error(`[SEO-V3] ❌ Failed to save category status for ${category}: ${error.message}`);
+        addActivityLog('error', `[V3] KV save error: ${category} - ${error.message}`);
+        return false;
+    }
+}
+async function getCategoryStatus(category) {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken)
+        return null;
+    const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${CATEGORY_STATUS_PREFIX}${category}`;
+    try {
+        const res = await fetch(url, { headers: { 'Authorization': `Bearer ${cfApiToken}` } });
+        if (!res.ok)
+            return null;
+        const text = await res.text();
+        return JSON.parse(text);
+    }
+    catch {
+        return null;
+    }
+}
+async function getCompletedCategories() {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken)
+        return [];
+    const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/keys?prefix=${CATEGORY_STATUS_PREFIX}`;
+    try {
+        const res = await fetch(url, { headers: { 'Authorization': `Bearer ${cfApiToken}` } });
+        if (!res.ok)
+            return [];
+        const data = await res.json();
+        const completed = [];
+        for (const key of data.result || []) {
+            const category = key.name.replace(CATEGORY_STATUS_PREFIX, '');
+            const status = await getCategoryStatus(category);
+            if (status?.status === 'completed') {
+                completed.push(category);
+            }
+        }
+        return completed;
+    }
+    catch {
+        return [];
+    }
+}
+async function countArticlesInCategory(category) {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken)
+        return 0;
+    const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/keys?prefix=${category}:`;
+    try {
+        const res = await fetch(url, { headers: { 'Authorization': `Bearer ${cfApiToken}` } });
+        if (!res.ok)
+            return 0;
+        const data = await res.json();
+        return data.result?.length || 0;
+    }
+    catch {
+        return 0;
+    }
+}
+async function canAttemptDiscovery() {
+    await loadDiscoveryState();
+    if (discoveryState.cooldownUntil && new Date() < discoveryState.cooldownUntil) {
+        return false;
+    }
+    return true;
+}
+async function recordDiscoveryFailure() {
+    discoveryState.failureCount++;
+    discoveryState.lastFailure = new Date();
+    if (discoveryState.failureCount >= discoveryState.maxRetries) {
+        discoveryState.cooldownUntil = new Date(Date.now() + discoveryState.cooldownMinutes * 60 * 1000);
+        addActivityLog('warning', `[V3] Discovery cooldown activated for ${discoveryState.cooldownMinutes} minutes`);
+    }
+    await saveDiscoveryState();
+}
+async function recordDiscoverySuccess() {
+    discoveryState.failureCount = 0;
+    discoveryState.lastFailure = null;
+    discoveryState.cooldownUntil = null;
+    await saveDiscoveryState();
+}
+async function logDiscoveryError(reason) {
+    // NO FALLBACKS - Log error and return null for manual intervention
+    // See .github/skills/error-recovery/SKILL.md for error handling guidelines
+    console.error(`[SEO-V3] ❌ Discovery blocked: ${reason}`);
+    addActivityLog('error', `[V3] Discovery failed - no fallbacks used. Reason: ${reason}`);
+    addActivityLog('warning', `[V3] System in cooldown. Manual intervention may be required.`);
+    return null;
+}
+/**
+ * Autonomous category discovery via Copilot CLI
+ * Discovers the next high-value cat category, excluding:
+ * - All V3 completed/in-progress categories
+ * - All V2 completed categories (prevents overlap)
+ */
+async function discoverNextCategory() {
+    if (!await canAttemptDiscovery()) {
+        return logDiscoveryError('Discovery in cooldown period - wait for cooldown to expire');
+    }
+    addActivityLog('info', '[V3] Discovering next category via Copilot CLI (autonomous)...');
+    // Get ALL categories to exclude: V3 completed + V2 completed
+    const v3Completed = await getCompletedCategories();
+    const v2Completed = await getV2CompletedCategories();
+    const v3InProgress = await getAllCategoryStatusKeys();
+    const allExcluded = [...new Set([...v3Completed, ...v2Completed, ...v3InProgress])];
+    const excludedList = allExcluded.join(', ') || 'none yet';
+    addActivityLog('info', `[V3] Excluding ${allExcluded.length} categories (V3: ${v3Completed.length} completed, V2: ${v2Completed.length} completed)`);
+    const prompt = `You are a cat niche SEO researcher. Find the next high-value category for catsluvus.com.
+
+ALREADY COMPLETED OR IN-PROGRESS CATEGORIES (do NOT suggest these):
+${excludedList}
+
+REQUIREMENTS:
+1. Must be cat-related (not dogs, not general pets)
+2. Must have affiliate potential (products to recommend)
+3. Must have 10+ keyword opportunities (we target 10 high-quality articles per cluster)
+4. Prioritize high commercial intent (buying keywords)
+5. Category slug should be descriptive (e.g., "cat-water-fountains", "cat-beds-blankets")
+6. Think about what cat owners actually buy on Amazon
+
+Return ONLY valid JSON (no markdown, no explanation):
+{
+  "name": "Category Name",
+  "slug": "category-slug",
+  "estimatedKeywords": 10,
+  "affiliatePotential": "high",
+  "reasoning": "Brief explanation"
+}`;
+    try {
+        const result = await generateWithCopilotCLI(prompt, 120000, 2);
+        if (result) {
+            const jsonMatch = result.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                const category = JSON.parse(jsonMatch[0]);
+                // Check against ALL excluded categories
+                if (allExcluded.includes(category.slug)) {
+                    addActivityLog('warning', `[V3] Copilot suggested excluded category: ${category.slug} - retrying`);
+                    await recordDiscoveryFailure();
+                    return logDiscoveryError(`Copilot suggested already-used category: ${category.slug}`);
+                }
+                await recordDiscoverySuccess();
+                addActivityLog('success', `[V3] 🎯 Autonomously discovered category: ${category.name} (${category.slug})`, category);
+                console.log(`[SEO-V3] ✅ Autonomous discovery: ${category.name} (${category.slug}) - ${category.reasoning}`);
+                return category;
+            }
+        }
+        await recordDiscoveryFailure();
+        return logDiscoveryError('Copilot response did not contain valid JSON');
+    }
+    catch (error) {
+        console.error(`[SEO-V3] ❌ Copilot discovery failed: ${error.message}`);
+        addActivityLog('error', `[V3] Copilot discovery failed: ${error.message}`);
+        await recordDiscoveryFailure();
+        return logDiscoveryError(`Copilot CLI error: ${error.message}`);
+    }
+}
+async function generateCategoryKeywords(category) {
+    addActivityLog('info', `[V3] Generating keywords for: ${category.name}`);
+    const prompt = `Generate exactly 10 SEO keywords for the "${category.name}" category on a cat website (catsluvus.com).
+
+REQUIREMENTS:
+1. Mix of informational and commercial intent
+2. Include long-tail keywords (3-5 words)
+3. Focus on topics with affiliate potential
+4. Avoid generic terms like "cat" or "cats" alone
+5. Each keyword should be a complete search phrase
+6. Only 10 keywords - quality over quantity, each must be distinct and high-value
+
+Return ONLY a JSON array of keyword strings (no markdown, no explanation):
+["keyword one", "keyword two", ...]`;
+    try {
+        const result = await generateWithCopilotCLI(prompt, 120000, 2);
+        if (result) {
+            const jsonMatch = result.match(/\[[\s\S]*\]/);
+            if (jsonMatch) {
+                const keywords = JSON.parse(jsonMatch[0]);
+                console.log(`[SEO-V3] ✅ Copilot returned ${keywords.length} keywords for ${category.name}`);
+                addActivityLog('success', `[V3] Generated ${keywords.length} keywords for ${category.name}`);
+                return keywords;
+            }
+            else {
+                console.error(`[SEO-V3] ⚠️ Copilot response had no JSON array for ${category.name}. Response preview: ${result.substring(0, 200)}`);
+                addActivityLog('warning', `[V3] Copilot returned non-JSON for ${category.name}`);
+            }
+        }
+        else {
+            console.error(`[SEO-V3] ⚠️ Copilot returned empty response for ${category.name}`);
+            addActivityLog('warning', `[V3] Copilot returned empty for ${category.name}`);
+        }
+    }
+    catch (error) {
+        console.error(`[SEO-V3] ❌ Keyword generation failed for ${category.name}: ${error.message}`);
+        addActivityLog('error', `[V3] Keyword generation failed: ${error.message}`);
+    }
+    console.log(`[SEO-V3] ⚠️ Returning empty keywords for ${category.name} - fallback will be used`);
+    return [];
+}
+// ============================================================================
+// Cloudflare Worker Route Auto-Configuration
+// ============================================================================
+// Cache of configured routes to avoid duplicate API calls
+const configuredRoutes = new Set();
+// Retry configuration for Worker Route API calls
+const WORKER_ROUTE_MAX_RETRIES = 3;
+const WORKER_ROUTE_INITIAL_DELAY_MS = 1000;
+/**
+ * Helper function for exponential backoff retry
+ */
+async function retryWithBackoff(fn, maxRetries = WORKER_ROUTE_MAX_RETRIES, initialDelayMs = WORKER_ROUTE_INITIAL_DELAY_MS) {
+    let lastError = null;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            return await fn();
+        }
+        catch (error) {
+            lastError = error;
+            if (attempt < maxRetries - 1) {
+                const delayMs = initialDelayMs * Math.pow(2, attempt);
+                console.log(`[SEO-V3] Retry ${attempt + 1}/${maxRetries} after ${delayMs}ms: ${error.message}`);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+            }
+        }
+    }
+    throw lastError;
+}
+/**
+ * Helper to fetch current Worker routes from Cloudflare
+ */
+async function fetchWorkerRoutes(cfApiToken) {
+    const listUrl = `https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/workers/routes`;
+    const listRes = await fetch(listUrl, {
+        headers: { 'Authorization': `Bearer ${cfApiToken}` }
+    });
+    if (!listRes.ok) {
+        throw new Error(`Failed to list routes: ${listRes.status} ${listRes.statusText}`);
+    }
+    return (await listRes.json()).result || [];
+}
+/**
+ * Automatically configure a Cloudflare Worker Route for a new V3 category
+ * Creates route pattern: catsluvus.com/{category}/* -> petinsurance Worker
+ * This enables the public domain to route V3 category URLs to the Worker
+ *
+ * Features:
+ * - Automatic retry with exponential backoff (3 attempts)
+ * - Creates routes for both www and non-www variants
+ * - Caches successful configurations to avoid duplicate API calls
+ * - Handles 409/conflict errors as success (route already exists)
+ * - Re-fetches route list before each create to avoid stale state
+ * - Returns partial status when some routes fail
+ */
+async function ensureWorkerRouteForCategory(category) {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken) {
+        console.log('[SEO-V3] No Cloudflare API token - skipping Worker Route configuration');
+        addActivityLog('warning', `[V3] Worker Route skipped: No API token`, { category });
+        return { success: false, error: 'No API token' };
+    }
+    // Skip if already configured this session
+    if (configuredRoutes.has(category)) {
+        console.log(`[SEO-V3] Worker Route already configured for ${category} (cached)`);
+        return { success: true };
+    }
+    const routePattern = `catsluvus.com/${category}/*`;
+    const listUrl = `https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/workers/routes`;
+    try {
+        // First, check if primary route already exists (with retry)
+        const existingRoutes = await retryWithBackoff(async () => fetchWorkerRoutes(cfApiToken));
+        const existingRoute = existingRoutes.find((r) => r.pattern === routePattern);
+        if (existingRoute) {
+            console.log(`[SEO-V3] ✓ Worker Route already exists: ${routePattern} (ID: ${existingRoute.id})`);
+            configuredRoutes.add(category);
+            return { success: true, routeId: existingRoute.id };
+        }
+        // Create routes for both catsluvus.com and www.catsluvus.com
+        // Also create routes for both /{category}/* and /{category} (index)
+        const routePatterns = [
+            `catsluvus.com/${category}/*`,
+            `catsluvus.com/${category}`,
+            `www.catsluvus.com/${category}/*`,
+            `www.catsluvus.com/${category}`
+        ];
+        let successCount = 0;
+        let failedPatterns = [];
+        let lastRouteId = '';
+        for (const pattern of routePatterns) {
+            // Re-fetch routes before each create to avoid stale state
+            let currentRoutes;
+            try {
+                currentRoutes = await retryWithBackoff(async () => fetchWorkerRoutes(cfApiToken));
+            }
+            catch (err) {
+                console.warn(`[SEO-V3] Failed to refresh route list: ${err.message}, using cached`);
+                currentRoutes = existingRoutes;
+            }
+            // Check if this specific pattern already exists
+            if (currentRoutes.some((r) => r.pattern === pattern)) {
+                console.log(`[SEO-V3] ✓ Route already exists: ${pattern}`);
+                successCount++;
+                continue;
+            }
+            // Create route with retry
+            try {
+                const result = await retryWithBackoff(async () => {
+                    console.log(`[SEO-V3] Creating Worker Route: ${pattern} -> ${CLOUDFLARE_WORKER_NAME}`);
+                    const createRes = await fetch(listUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${cfApiToken}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            pattern: pattern,
+                            script: CLOUDFLARE_WORKER_NAME
+                        })
+                    });
+                    const createData = await createRes.json();
+                    // Handle 409 conflict or "route already exists" as success
+                    if (createRes.status === 409 ||
+                        createData.errors?.some((e) => e.message?.includes('already exists') || e.code === 10020)) {
+                        console.log(`[SEO-V3] ✓ Route already exists (conflict): ${pattern}`);
+                        return { id: 'exists', conflict: true };
+                    }
+                    if (!createRes.ok || !createData.success) {
+                        const errorMsg = createData.errors?.[0]?.message || `HTTP ${createRes.status}`;
+                        throw new Error(errorMsg);
+                    }
+                    return createData.result;
+                });
+                if (result?.conflict) {
+                    successCount++;
+                }
+                else {
+                    console.log(`[SEO-V3] ✓ Worker Route created: ${pattern} (ID: ${result?.id})`);
+                    lastRouteId = result?.id || lastRouteId;
+                    successCount++;
+                }
+            }
+            catch (error) {
+                console.error(`[SEO-V3] ⚠️ Failed to create route ${pattern} after ${WORKER_ROUTE_MAX_RETRIES} retries: ${error.message}`);
+                failedPatterns.push(pattern);
+            }
+        }
+        const totalPatterns = routePatterns.length;
+        const isPartial = successCount > 0 && failedPatterns.length > 0;
+        const isFullSuccess = successCount === totalPatterns;
+        if (isFullSuccess) {
+            configuredRoutes.add(category);
+            addActivityLog('success', `[V3] Worker Routes configured: ${category}`, {
+                routesCreated: successCount,
+                patterns: routePatterns
+            });
+            return { success: true, routeId: lastRouteId };
+        }
+        else if (isPartial) {
+            // Partial success - don't cache, allow retry next time
+            addActivityLog('warning', `[V3] Worker Routes partial: ${category}`, {
+                routesCreated: successCount,
+                routesFailed: failedPatterns.length,
+                patterns: routePatterns,
+                failedPatterns
+            });
+            console.warn(`[SEO-V3] ⚠️ Partial success for ${category}: ${successCount}/${totalPatterns} routes created`);
+            return { success: true, partial: true, routeId: lastRouteId, error: `${failedPatterns.length} routes failed: ${failedPatterns.join(', ')}` };
+        }
+        else {
+            addActivityLog('error', `[V3] All Worker Routes failed: ${category}`, {
+                failedPatterns,
+                lastError: 'All retry attempts exhausted'
+            });
+            return { success: false, error: `All routes failed after ${WORKER_ROUTE_MAX_RETRIES} retries each` };
+        }
+    }
+    catch (error) {
+        console.error(`[SEO-V3] ❌ Worker Route error: ${error.message}`);
+        addActivityLog('error', `[V3] Worker Route error: ${category}`, { error: error.message });
+        return { success: false, error: error.message };
+    }
+}
+// ============================================================================
+// Duplicate Tracking - Fetch existing articles from KV
+// ============================================================================
+// Cache of existing article slugs (refreshed periodically)
+let existingArticleSlugs = new Set();
+let slugsCacheTime = 0;
+const SLUGS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+/**
+ * Fetch all existing article slugs from Cloudflare KV
+ * Uses the KV list API to get all keys
+ */
+async function fetchExistingArticleSlugs() {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken) {
+        console.warn('No Cloudflare API token - cannot check for duplicates');
+        return new Set();
+    }
+    // Return cached if still valid
+    if (existingArticleSlugs.size > 0 && Date.now() - slugsCacheTime < SLUGS_CACHE_TTL) {
+        return existingArticleSlugs;
+    }
+    try {
+        const slugs = new Set();
+        let cursor;
+        // Paginate through all KV keys
+        do {
+            const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/keys?limit=1000${cursor ? `&cursor=${cursor}` : ''}`;
+            const response = await fetch(url, {
+                headers: {
+                    'Authorization': `Bearer ${cfApiToken}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            if (!response.ok) {
+                console.error('Failed to fetch KV keys:', response.status);
+                break;
+            }
+            const data = await response.json();
+            // Filter out system keys (sitemap.xml, etc) and add article slugs
+            for (const key of data.result || []) {
+                const name = key.name;
+                // Skip system keys
+                if (name === 'sitemap.xml' || name.startsWith('gsc_') || name.startsWith('seo:')) {
+                    continue;
+                }
+                slugs.add(name);
+            }
+            cursor = data.result_info?.cursor;
+        } while (cursor);
+        existingArticleSlugs = slugs;
+        slugsCacheTime = Date.now();
+        console.log(`📊 Fetched ${slugs.size} existing article slugs from KV`);
+        const petinsuranceSlugs = Array.from(slugs).filter(s => !s.includes(':'));
+        if (petinsuranceSlugs.length > 0) {
+            (0, seo_data_1.bulkRegisterArticles)(petinsuranceSlugs, 'petinsurance');
+        }
+        return slugs;
+    }
+    catch (error) {
+        console.error('Error fetching KV keys:', error.message);
+        return existingArticleSlugs; // Return cached even if stale
+    }
+}
+/**
+ * Fetch existing article slugs for V3 category (filtered by kvPrefix)
+ */
+async function fetchExistingArticleSlugsForCategory(kvPrefix) {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken)
+        return [];
+    try {
+        const slugs = [];
+        let cursor;
+        do {
+            const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/keys?prefix=${encodeURIComponent(kvPrefix)}&limit=1000${cursor ? `&cursor=${cursor}` : ''}`;
+            const response = await fetch(url, {
+                headers: {
+                    'Authorization': `Bearer ${cfApiToken}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            if (!response.ok)
+                break;
+            const data = await response.json();
+            for (const key of data.result || []) {
+                // Remove the prefix to get just the slug
+                const slug = key.name.replace(kvPrefix, '');
+                if (slug && !slug.includes(':') && slug !== 'sitemap.xml' && slug !== 'research-output') {
+                    slugs.push(slug);
+                }
+            }
+            cursor = data.result_info?.cursor;
+        } while (cursor);
+        if (slugs.length > 0) {
+            const category = kvPrefix.replace(':', '').replace(/-/g, '-');
+            (0, seo_data_1.bulkRegisterArticles)(slugs, category || 'cat-trees-condos');
+        }
+        return slugs;
+    }
+    catch (error) {
+        console.error('[SEO-V3] Error fetching V2 slugs:', error.message);
+        return [];
+    }
+}
+/**
+ * Fetch cross-category articles for internal linking (V3)
+ * Returns articles from OTHER V3 categories (not the current one) with full URLs
+ * V3 is kept separate from V1 petinsurance - uses only V3-exclusive categories
+ */
+async function fetchCrossCategoryArticlesForLinking(currentCategoryKvPrefix) {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken)
+        return [];
+    const articlesWithUrls = [];
+    // Normalize current category: remove trailing colon for comparison
+    // e.g., "cat-carriers-travel-products:" -> "cat-carriers-travel-products"
+    const currentCategoryNormalized = currentCategoryKvPrefix.replace(/:$/, '');
+    try {
+        // V3-only cross-category linking (no V1 petinsurance - V3 separate from V1)
+        // Dynamically fetch all V3 categories from KV (no hardcoded list)
+        const allV3Cats = await getAllCategoryStatusKeys();
+        const v3Categories = allV3Cats
+            .filter(cat => cat !== currentCategoryNormalized); // Exclude current category
+        for (const category of v3Categories.slice(0, 3)) { // Limit to 3 other categories
+            const catUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/keys?prefix=${encodeURIComponent(category + ':')}&limit=20`;
+            const catResponse = await fetch(catUrl, {
+                headers: { 'Authorization': `Bearer ${cfApiToken}`, 'Content-Type': 'application/json' }
+            });
+            if (catResponse.ok) {
+                const catData = await catResponse.json();
+                const catArticles = (catData.result || [])
+                    .filter((key) => {
+                    const name = key.name;
+                    // Skip non-article keys
+                    return !name.includes('sitemap') &&
+                        !name.includes('research') &&
+                        !name.includes('status') &&
+                        name.includes(':'); // Must be category:slug format
+                })
+                    .slice(0, 10)
+                    .map((key) => {
+                    const colonIndex = key.name.indexOf(':');
+                    if (colonIndex === -1)
+                        return null;
+                    const catPrefix = key.name.substring(0, colonIndex);
+                    const slug = key.name.substring(colonIndex + 1);
+                    if (!slug || slug.length < 3)
+                        return null;
+                    return `/${catPrefix}/${slug}`;
+                })
+                    .filter((url) => url !== null);
+                articlesWithUrls.push(...catArticles);
+            }
+        }
+        console.log(`[Internal Linking] Fetched ${articlesWithUrls.length} V3 cross-category articles (V3-only, no V1 links)`);
+        return articlesWithUrls;
+    }
+    catch (error) {
+        console.error('[Internal Linking] Error fetching cross-category articles:', error.message);
+        return [];
+    }
+}
+/**
+ * Build V3 article HTML with category-specific context
+ */
+function buildArticleHtml(article, slug, keyword, context, video, generatedImages, amazonProductData) {
+    // Robust CategoryContext guards - use safe defaults for all fields
+    // CRITICAL: Always prefer niche over hardcoded fallback for dynamic categories
+    const safeDomain = context?.domain || 'catsluvus.com';
+    const safeCategoryName = context?.categoryName || context?.niche || 'Cat Care';
+    // Derive basePath from categorySlug, category, or compute from categoryName
+    const derivedSlug = context?.categorySlug || context?.niche?.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') ||
+        (safeCategoryName !== 'Cat Care' ? safeCategoryName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') : 'cat-care');
+    const safeBasePath = context?.basePath || `/${derivedSlug}`;
+    const safeSiteName = context?.branding?.siteName || 'CatsLuvUs';
+    // Get category-specific author from CategoryContentData
+    const categorySlugForAuthor = context?.categorySlug || context?.niche || 'DEFAULT';
+    const categoryContentForAuthor = getCategoryContentData(categorySlugForAuthor);
+    const author = (context?.authors && context.authors.length > 0 && context.authors[0]) || {
+        name: categoryContentForAuthor.author.name,
+        title: categoryContentForAuthor.author.title,
+        credentials: categoryContentForAuthor.author.credentials,
+        bio: categoryContentForAuthor.author.bio,
+        image: 'https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=100&h=100&fit=crop'
+    };
+    const dateNow = new Date().toISOString().split('T')[0];
+    const canonicalUrl = `https://${safeDomain}${safeBasePath}/${slug}`;
+    // Build FAQ schema
+    const faqSchema = article.faqs && article.faqs.length > 0 ? {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": article.faqs.map(faq => ({
+            "@type": "Question",
+            "name": faq.question,
+            "acceptedAnswer": {
+                "@type": "Answer",
+                "text": faq.answer.replace(/<[^>]*>/g, '').substring(0, 500)
+            }
+        }))
+    } : null;
+    // Build Article schema
+    const articleSchema = {
+        "@context": "https://schema.org",
+        "@type": "Article",
+        "headline": article.title,
+        "description": article.metaDescription,
+        "datePublished": dateNow,
+        "dateModified": dateNow,
+        "author": {
+            "@type": "Person",
+            "name": author.name,
+            "jobTitle": author.title
+        },
+        "publisher": {
+            "@type": "Organization",
+            "name": safeSiteName,
+            "logo": {
+                "@type": "ImageObject",
+                "url": `https://${safeDomain}/logo.png`
+            }
+        },
+        "mainEntityOfPage": canonicalUrl
+    };
+    // Build VideoObject schema if video exists (use correct YouTubeVideo interface fields)
+    const videoSchema = video ? {
+        "@context": "https://schema.org",
+        "@type": "VideoObject",
+        "name": video.title,
+        "description": video.description || `Video about ${keyword}`,
+        "thumbnailUrl": video.thumbnailUrl,
+        "uploadDate": video.publishedISO || video.published || dateNow,
+        "contentUrl": video.watchUrl || `https://www.youtube.com/watch?v=${video.videoId}`,
+        "embedUrl": video.embedUrl || `https://www.youtube.com/embed/${video.videoId}`,
+        "duration": video.durationISO || undefined,
+        "interactionStatistic": video.viewCount ? {
+            "@type": "InteractionCounter",
+            "interactionType": "WatchAction",
+            "userInteractionCount": video.viewCount
+        } : undefined
+    } : null;
+    // Build breadcrumb schema
+    const breadcrumbSchema = {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            { "@type": "ListItem", "position": 1, "name": "Home", "item": `https://${safeDomain}` },
+            { "@type": "ListItem", "position": 2, "name": safeCategoryName, "item": `https://${safeDomain}${safeBasePath}` },
+            { "@type": "ListItem", "position": 3, "name": article.title }
+        ]
+    };
+    // Build Product schema from real Amazon data (preferred) or AI-generated comparison table
+    // Priority: 1) Real Amazon products, 2) AI-generated, 3) Category defaults
+    const articleComparisonData = article.comparisonTable;
+    const categoryContentForProducts = getCategoryContentData(categorySlugForAuthor);
+    let productSchema = null;
+    // Use real Amazon product schema if we have it
+    if (amazonProductData && amazonProductData.productSchemaItems.length > 0) {
+        productSchema = {
+            "@context": "https://schema.org",
+            "@type": "ItemList",
+            "name": `Best ${keyword} Comparison`,
+            "description": `Comparison of top ${keyword} products with real Amazon prices and ratings`,
+            "itemListElement": amazonProductData.productSchemaItems
+        };
+        console.log(`[SEO-V3] ✅ Product schema from REAL Amazon data (${amazonProductData.products.length} products with ASINs)`);
+    }
+    else if (articleComparisonData && articleComparisonData.rows && articleComparisonData.rows.length > 0) {
+        productSchema = generateProductSchema(articleComparisonData.headers || [], articleComparisonData.rows || [], article.externalLinks || categoryContentForProducts.externalLinks || [], keyword);
+        if (productSchema) {
+            console.log(`[SEO-V3] ✅ Product schema from AI-generated data (${articleComparisonData.rows.length} products)`);
+        }
+    }
+    else if (categoryContentForProducts && categoryContentForProducts.comparisonRows && categoryContentForProducts.comparisonRows.length > 0) {
+        productSchema = generateProductSchema(categoryContentForProducts.comparisonHeaders || [], categoryContentForProducts.comparisonRows || [], categoryContentForProducts.externalLinks || [], keyword);
+        if (productSchema) {
+            console.log(`[SEO-V3] ⚠️ Product schema from category defaults (${categoryContentForProducts.comparisonRows.length} products)`);
+        }
+    }
+    // Build comparison table HTML with Amazon affiliate links
+    const amazonTag = process.env.AMAZON_AFFILIATE_TAG || 'catsluvus03-20';
+    let comparisonTableHtml = '';
+    if (article.comparisonTable && article.comparisonTable.headers && article.comparisonTable.rows) {
+        // Check if last column is Amazon Search - replace with clickable link
+        const hasAmazonColumn = article.comparisonTable.headers.some(h => h.toLowerCase().includes('amazon') || h.toLowerCase().includes('buy') || h.toLowerCase().includes('link'));
+        // Build headers - replace Amazon Search with "Buy Now" column
+        const displayHeaders = hasAmazonColumn
+            ? [...article.comparisonTable.headers.slice(0, -1), 'Buy Now']
+            : article.comparisonTable.headers;
+        const pickItems = article.comparisonTable.rows.map((row, idx) => {
+            const rowArray = Array.isArray(row) ? row : (typeof row === 'string' ? [row] : Object.values(row || {}));
+            if (!rowArray.length)
+                return '';
+            const productName = String(rowArray[0] || '').replace(/\.{3,}$/, '');
+            const price = String(rowArray[1] || '');
+            const features = String(rowArray[2] || '');
+            const rating = String(rowArray[3] || '');
+            let amazonBtnHtml = '';
+            if (hasAmazonColumn && rowArray.length >= 5) {
+                const amazonSearch = rowArray[rowArray.length - 1] || String(rowArray[0]).replace(/\s+/g, '+');
+                const amazonUrl = 'https://www.amazon.com/s?k=' + encodeURIComponent(String(amazonSearch).replace(/\+/g, ' ')) + '&tag=' + amazonTag;
+                amazonBtnHtml = '<a href="' + amazonUrl + '" target="_blank" rel="nofollow sponsored" class="amazon-btn">Buy Now</a>';
+            }
+            const ratingNum = parseFloat(rating) || 0;
+            const fullStars = Math.floor(ratingNum);
+            const starsHtml = '\u2605'.repeat(fullStars) + (ratingNum % 1 >= 0.5 ? '\u00BD' : '') + '\u2606'.repeat(5 - Math.ceil(ratingNum));
+            const ratingHtml = ratingNum > 0 ? '<span class="pick-rating"><span class="stars">' + starsHtml + '</span> ' + rating + '</span>' : '';
+            const featuresHtml = features && features !== 'Premium quality' ? '<span class="pick-features">' + features + '</span>' : '';
+            const priceHtml = price && price !== 'Price not available' ? '<span class="pick-price">' + price + '</span>' : '';
+            return '<li class="top-pick-item">' +
+                '<span class="pick-rank">' + (idx + 1) + '</span>' +
+                '<div class="pick-info">' +
+                '<p class="pick-name">' + productName + '</p>' +
+                '<div class="pick-meta">' + ratingHtml + featuresHtml + priceHtml + '</div>' +
+                '</div>' +
+                amazonBtnHtml +
+                '</li>';
+        }).join('');
+        comparisonTableHtml = '<div class="top-picks">' +
+            '<div class="top-picks-header">' +
+            '<span class="picks-icon">\uD83C\uDFC6</span>' +
+            '<h3>Our Top Picks</h3>' +
+            '</div>' +
+            '<ul class="top-picks-list">' + pickItems + '</ul>' +
+            '</div>';
+    }
+    // Helper function to build image HTML with lazy loading and ImageObject schema
+    // Uses intrinsic sizing (width/height for aspect ratio) with responsive CSS override
+    const buildImageHtml = (image) => {
+        return `
+      <figure class="article-image" itemscope itemtype="https://schema.org/ImageObject">
+        <img
+          src="${image.url}"
+          alt="${image.alt.replace(/"/g, '&quot;')}"
+          width="${image.width}"
+          height="${image.height}"
+          style="width: 100%; height: auto; max-width: 100%;"
+          loading="lazy"
+          decoding="async"
+          itemprop="contentUrl"
+        >
+        <figcaption itemprop="caption">${image.caption}</figcaption>
+        <meta itemprop="width" content="${image.width}">
+        <meta itemprop="height" content="${image.height}">
+      </figure>
+    `;
+    };
+    // Get hero image (always generated)
+    const heroImage = generatedImages?.find(img => img.imageType === 'hero');
+    const heroImageHtml = heroImage ? buildImageHtml(heroImage) : '';
+    // Note: Closing images removed per SEO best practices (1-2 images max)
+    // Only hero + optional mid-article section image are generated now
+    // Build sections HTML with AI-generated images after each H2
+    let sectionsHtml = '';
+    if (article.sections && Array.isArray(article.sections)) {
+        sectionsHtml = article.sections.map((section, index) => {
+            // Find matching section image (sectionIndex is 1-based)
+            const sectionImage = generatedImages?.find(img => img.imageType === 'section' && img.sectionIndex === index + 1);
+            const sectionImageHtml = sectionImage ? buildImageHtml(sectionImage) : '';
+            return `
+        <section id="section-${index + 1}">
+          <h2>${section.heading}</h2>
+          ${sectionImageHtml}
+          ${section.content}
+        </section>
+      `;
+        }).join('');
+    }
+    // Build Table of Contents from sections
+    let tocHtml = '';
+    if (article.sections && article.sections.length > 1) {
+        const tocItems = article.sections.map((section, index) => `<li><a href="#section-${index + 1}">${section.heading}</a></li>`).join('');
+        tocHtml = `
+      <nav class="toc" aria-label="Table of Contents">
+        <strong>In This Article</strong>
+        <ol>
+          ${tocItems}
+          ${article.faqs && article.faqs.length > 0 ? '<li><a href="#faq-section">Frequently Asked Questions</a></li>' : ''}
+        </ol>
+      </nav>
+    `;
+    }
+    // Build FAQ HTML
+    let faqHtml = '';
+    if (article.faqs && article.faqs.length > 0) {
+        faqHtml = `
+      <section class="faqs" id="faq-section">
+        <h2>Frequently Asked Questions About ${keyword}</h2>
+        ${article.faqs.map(faq => `
+          <div class="faq-item">
+            <h3>${faq.question}</h3>
+            <p>${faq.answer}</p>
+          </div>
+        `).join('')}
+      </section>
+    `;
+    }
+    // Build video hero HTML - prominent placement for Google Video indexing
+    let videoHeroHtml = '';
+    if (video) {
+        videoHeroHtml = `
+      <section class="video-hero" id="video">
+        <p class="video-hero-title">Watch: Expert Guide on ${keyword}</p>
+        <div class="video-container">
+          <iframe width="560" height="315" src="${video.embedUrl || `https://www.youtube.com/embed/${video.videoId}`}?rel=0&modestbranding=1" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="eager" title="${video.title}"></iframe>
+        </div>
+        <p class="video-hero-meta"><strong>${video.channel}</strong> • ${video.duration || ''} • ${video.views || ''}</p>
+        <p class="video-hero-cta">Continue reading below for our complete written guide with pricing, comparisons, and FAQs.</p>
+      </section>
+    `;
+    }
+    // NOTE: Navigation menu items now handled by Worker HTMLRewriter injection
+    const currentYear = new Date().getFullYear();
+    // Build related articles section
+    const categorySlugForRelated = context?.categorySlug || '';
+    const relatedItems = (0, seo_data_1.getRelatedArticles)(slug, categorySlugForRelated, 6);
+    let relatedArticlesHtml = '';
+    if (relatedItems.length > 0) {
+        const relatedCards = relatedItems.map(item => {
+            const articleUrl = `https://${safeDomain}/${item.category}/${item.slug}`;
+            return `<a href="${articleUrl}" class="related-card"><span class="related-category">${item.category.replace(/-/g, ' ').toUpperCase()}</span><span class="related-title">${item.anchorText}</span></a>`;
+        }).join('');
+        relatedArticlesHtml = `
+      <section class="related-articles">
+        <h2>You Might Also Like</h2>
+        <div class="related-grid">${relatedCards}</div>
+      </section>
+    `;
+    }
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<!-- Google AdSense -->
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-9364522191686432" crossorigin="anonymous"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${article.title}</title>
+<meta name="description" content="${article.metaDescription}">
+<link rel="canonical" href="${canonicalUrl}">
+<link rel="icon" href="https://${safeDomain}/favicon.ico" type="image/x-icon">
+<link rel="apple-touch-icon" href="https://${safeDomain}/apple-touch-icon.png">
+<meta property="og:title" content="${article.title}">
+<meta property="og:description" content="${article.metaDescription}">
+<meta property="og:url" content="${canonicalUrl}">
+<meta property="og:type" content="article">
+<meta property="og:image" content="${heroImage?.url || `https://${safeDomain}/img${safeBasePath}/${slug}/hero.png`}">
+<meta property="og:image:width" content="1024">
+<meta property="og:image:height" content="768">
+<meta property="og:site_name" content="${safeSiteName}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="${article.title}">
+<meta name="twitter:description" content="${article.metaDescription}">
+<meta name="twitter:image" content="${heroImage?.url || `https://${safeDomain}/img${safeBasePath}/${slug}/hero.png`}">
+<script type="application/ld+json">${JSON.stringify(articleSchema)}</script>
+<script type="application/ld+json">${JSON.stringify(breadcrumbSchema)}</script>
+${faqSchema ? `<script type="application/ld+json">${JSON.stringify(faqSchema)}</script>` : ''}
+${videoSchema ? `<script type="application/ld+json">${JSON.stringify(videoSchema)}</script>` : ''}
+${productSchema ? `<script type="application/ld+json">${JSON.stringify(productSchema)}</script>` : ''}
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-KPSXGQWC');</script>
+<style>
+/* CSS Custom Properties */
+:root {
+  --wc-color-primary: #326891;
+  --wc-color-primary-dark: #265073;
+  --wc-color-text: #121212;
+  --wc-color-text-secondary: #555555;
+  --wc-color-border: #e2e2e2;
+  --wc-color-bg: #ffffff;
+  --wc-color-bg-hover: #f8f8f8;
+  --wc-transition-speed: 300ms;
+}
+
+/* Reset & Base */
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{overflow-x:hidden;width:100%;max-width:100%}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.8;color:var(--wc-color-text);background:var(--wc-color-bg)}
+
+/* Skip Link for Accessibility */
+.skip-link{position:absolute;top:-40px;left:0;background:#333;color:#fff;padding:8px 16px;text-decoration:none;border-radius:0 0 4px 0;z-index:99999}
+.skip-link:focus{top:0}
+.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+
+/* NOTE: Navigation chrome (hamburger, nav, footer) injected by Worker HTMLRewriter */
+
+/* Main Content */
+main{padding-top:0;overflow-x:hidden}
+.container{max-width:720px;margin:0 auto;padding:40px 24px;overflow-wrap:break-word;word-wrap:break-word;overflow-x:hidden}
+
+/* Typography */
+body{font-size:18px;line-height:1.75;letter-spacing:-0.01em}
+article{font-size:18px;line-height:1.8;color:#1a1a1a;overflow-wrap:break-word;word-wrap:break-word}
+article p{margin-bottom:1.5em;text-align:left;word-spacing:0.05em;overflow-wrap:break-word;hyphens:auto;-webkit-hyphens:auto}
+h1{font-size:2rem;margin-bottom:20px;color:var(--wc-color-primary);line-height:1.3;letter-spacing:-0.02em}
+h2{font-size:1.4rem;margin:48px 0 24px;border-bottom:2px solid var(--wc-color-border);padding-bottom:12px;line-height:1.4}
+h3{font-size:1.15rem;margin:32px 0 16px;line-height:1.4}
+p{margin-bottom:1.25em;overflow-wrap:break-word;hyphens:auto;-webkit-hyphens:auto}
+ul,ol{margin:1.25em 0 1.5em 1.5em;line-height:1.7}
+li{margin-bottom:0.5em;overflow-wrap:break-word}
+a{color:var(--wc-color-primary)}
+
+/* Prevent content overflow */
+article img,article video,article iframe,article embed,article object{max-width:100%;height:auto;display:block}
+article pre,article code{overflow-x:auto;max-width:100%;white-space:pre-wrap;word-wrap:break-word}
+a{overflow-wrap:break-word;word-break:break-all}
+article *{max-width:100%}
+
+/* Breadcrumb */
+.breadcrumb{font-size:14px;margin-bottom:20px;padding-top:10px}
+.breadcrumb a{color:var(--wc-color-primary);text-decoration:none}
+
+/* Article Images */
+.article-image{margin:30px 0;text-align:center}
+.article-image img{max-width:100%;height:auto;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1)}
+.article-image figcaption{font-size:14px;color:#666;margin-top:10px;font-style:italic}
+
+/* Author Box */
+.author-box{display:flex;gap:16px;padding:20px;background:#f8f9fa;border-radius:8px;margin:24px 0;border-left:4px solid var(--wc-color-primary)}
+.author-box img{width:80px;height:80px;border-radius:50%;object-fit:cover;flex-shrink:0}
+.author-info h4{margin:0 0 4px;color:var(--wc-color-primary)}
+.author-info .credentials{font-size:14px;color:#666;margin-bottom:8px}
+.author-info .bio{font-size:15px;line-height:1.6}
+
+/* Quick Answer Box */
+.quick-answer{background:#fff3cd;border:2px solid #ffc107;border-radius:8px;padding:20px 25px;margin:20px 0 30px 0;font-size:1.1em;line-height:1.7}
+.quick-answer strong{color:#856404;display:block;margin-bottom:8px;font-size:0.95em;text-transform:uppercase;letter-spacing:0.5px}
+
+/* Key Takeaways */
+.key-takeaways{background:linear-gradient(135deg,#e8f4f8 0%,#d4e8ed 100%);border-left:4px solid var(--wc-color-primary);padding:20px 25px;border-radius:0 8px 8px 0;margin:30px 0}
+.key-takeaways h2,.key-takeaways strong{font-size:1.2rem;margin:0 0 15px 0;color:var(--wc-color-primary)}
+.key-takeaways ul{margin:0;padding-left:20px}
+.key-takeaways li{margin:8px 0;line-height:1.6}
+
+/* Our Top Picks - Wirecutter Style */
+.top-picks{margin:32px 0;border:2px solid #e2e8f0;border-radius:12px;overflow:hidden;background:#fff}
+.top-picks-header{background:linear-gradient(135deg,#1a365d 0%,#2d3748 100%);padding:16px 24px;display:flex;align-items:center;gap:10px}
+.top-picks-header h3{margin:0;color:#fff;font-size:20px;font-weight:800;letter-spacing:-0.3px}
+.top-picks-header .picks-icon{font-size:22px}
+.top-picks-list{padding:0;margin:0;list-style:none}
+.top-pick-item{display:flex;align-items:center;justify-content:space-between;padding:18px 24px;border-bottom:1px solid #e2e8f0;gap:16px;transition:background 0.2s ease}
+.top-pick-item:last-child{border-bottom:none}
+.top-pick-item:hover{background:#f7fafc}
+.pick-rank{flex-shrink:0;width:32px;height:32px;background:#edf2f7;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#2d3748}
+.pick-info{flex:1;min-width:0}
+.pick-name{font-weight:700;font-size:15px;color:#1a202c;margin:0 0 4px 0;line-height:1.3}
+.pick-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.pick-rating{display:inline-flex;align-items:center;gap:4px;font-size:13px;color:#d69e2e;font-weight:600}
+.pick-rating .stars{color:#d69e2e}
+.pick-features{font-size:13px;color:#718096}
+.pick-price{font-size:13px;color:#4a5568;font-weight:600}
+.amazon-btn{display:inline-flex;align-items:center;gap:6px;background:linear-gradient(180deg,#ff9900 0%,#e47911 100%);color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px;border:none;box-shadow:0 3px 10px rgba(255,153,0,0.3);transition:all 0.3s ease;white-space:nowrap;flex-shrink:0}
+.amazon-btn:hover{background:linear-gradient(180deg,#ffad33 0%,#ff9900 100%);transform:translateY(-1px);box-shadow:0 5px 16px rgba(255,153,0,0.4);text-decoration:none;color:#fff}
+.amazon-btn::before{content:'';display:inline-block;width:18px;height:18px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'%3E%3Cpath d='M15.75 10.5V6a3.75 3.75 0 1 0-7.5 0v4.5m11.356-1.993 1.263 12c.07.665-.45 1.243-1.119 1.243H4.25a1.125 1.125 0 0 1-1.12-1.243l1.264-12A1.125 1.125 0 0 1 5.513 7.5h12.974c.576 0 1.059.435 1.119 1.007ZM8.625 10.5a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm7.5 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z'/%3E%3C/svg%3E");background-size:contain;background-repeat:no-repeat}
+.amazon-btn:active{transform:translateY(0);box-shadow:0 2px 8px rgba(255,153,0,0.3)}
+@media(max-width:640px){.top-pick-item{flex-wrap:wrap;gap:12px;padding:14px 16px}.pick-rank{width:28px;height:28px;font-size:12px}.amazon-btn{width:100%;justify-content:center;padding:12px}}
+
+/* FAQ Section */
+.faqs{background:#f8f8f8;padding:24px;border-radius:8px;margin:40px 0}
+.faq-item{margin-bottom:24px;padding-bottom:24px;border-bottom:1px solid var(--wc-color-border)}
+.faq-item:last-child{margin-bottom:0;padding-bottom:0;border-bottom:none}
+.faq-item h3{color:var(--wc-color-primary);margin-bottom:8px;margin-top:0}
+
+/* Video Hero Section */
+.video-hero{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);padding:24px;border-radius:12px;margin:20px 0 32px;box-shadow:0 8px 32px rgba(0,0,0,0.15)}
+.video-hero-title{color:#fff;font-size:1.1rem;margin:0 0 16px;font-weight:600;display:flex;align-items:center;gap:8px}
+.video-hero-title::before{content:'▶';color:#ff6b35;font-size:0.9rem}
+.video-hero .video-container{position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:8px;margin-bottom:16px;box-shadow:0 4px 20px rgba(0,0,0,0.3)}
+.video-hero .video-container iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:none;border-radius:8px}
+.video-hero-meta{color:#b8b8b8;font-size:14px;margin:0;display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.video-hero-meta strong{color:#fff}
+.video-hero-cta{color:#ff6b35;font-size:13px;margin-top:12px;font-style:italic}
+
+/* Video Container (fallback) */
+.video-container{position:relative;padding-bottom:56.25%;height:0;overflow:hidden;max-width:100%;border-radius:8px;margin-bottom:12px}
+.video-container iframe{position:absolute;top:0;left:0;width:100%;height:100%;border-radius:8px}
+
+/* Conclusion */
+.conclusion{background:linear-gradient(135deg,#326891,#265073);color:#fff;padding:24px;border-radius:8px;margin:40px 0}
+.conclusion h2{color:#fff;border-bottom-color:rgba(255,255,255,0.3)}
+
+/* Disclaimer */
+.disclaimer{background:#f8f9fa;padding:12px 20px;text-align:center;font-size:14px;border-bottom:1px solid #e5e5e5}
+.disclaimer a{color:#d63384;text-decoration:none}
+
+/* Footer */
+.site-footer{background:#1a1a1a;color:#fff;padding:60px 20px 40px;margin-top:60px}
+.footer-content{max-width:1200px;margin:0 auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:40px}
+.footer-section h4{font-size:16px;margin-bottom:16px;color:#fff}
+.footer-section ul{list-style:none;padding:0;margin:0}
+.footer-section li{margin-bottom:8px}
+.footer-section a{color:#aaa;text-decoration:none;font-size:14px}
+.footer-section a:hover{color:#fff}
+.footer-bottom{max-width:1200px;margin:40px auto 0;padding-top:20px;border-top:1px solid #333;text-align:center;color:#666;font-size:13px}
+.footer-bottom a{color:#888;text-decoration:none;margin:0 12px}
+
+/* Responsive */
+@media (max-width:768px){
+  body{font-size:17px}
+  article{font-size:17px;line-height:1.75}
+  h1{font-size:1.6rem}
+  h2{font-size:1.25rem;margin:36px 0 18px}
+  h3{font-size:1.1rem}
+  .container{padding:32px 20px}
+  .author-box{flex-direction:column;text-align:center}
+  .author-box img{margin:0 auto}
+  .footer-content{grid-template-columns:1fr 1fr}
+}
+@media (max-width:480px){
+  body{font-size:16px}
+  article{font-size:16px;line-height:1.7}
+  h1{font-size:1.4rem}
+  .container{padding:24px 16px}
+  .footer-content{grid-template-columns:1fr}
+  .key-takeaways{padding:16px 18px}
+  .faqs{padding:18px}
+  .conclusion{padding:18px}
+}
+
+/* Reduced Motion */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:0.01ms !important;transition-duration:0.01ms !important}
+}
+
+/* Table of Contents */
+.toc{background:#f8f9fa;border:1px solid #e2e8f0;border-radius:8px;padding:20px 24px;margin:24px 0}
+.toc strong{display:block;font-size:1.1em;margin-bottom:12px;color:var(--wc-color-primary-dark)}
+.toc ol{margin:0;padding-left:20px}
+.toc li{margin-bottom:6px;line-height:1.5}
+.toc a{color:var(--wc-color-primary);text-decoration:none;border-bottom:1px dotted var(--wc-color-primary)}
+.toc a:hover{color:var(--wc-color-primary-dark);border-bottom-style:solid}
+
+/* Related Articles */
+.related-articles{margin-top:48px;padding-top:32px;border-top:2px solid #e2e8f0}
+.related-articles h2{margin-bottom:20px}
+.related-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:16px}
+.related-card{display:flex;flex-direction:column;padding:16px;background:#f8f9fa;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;transition:box-shadow .2s,transform .2s}
+.related-card:hover{box-shadow:0 4px 12px rgba(0,0,0,.1);transform:translateY(-2px)}
+.related-category{font-size:.7em;font-weight:600;letter-spacing:.05em;color:var(--wc-color-primary);margin-bottom:8px}
+.related-title{font-size:.95em;color:var(--wc-color-text);font-weight:500;line-height:1.4}
+
+/* Print - hide chrome elements injected by Worker */
+@media print{
+  .hamburger-menu,.nav-menu,.universal-footer,.skip-link{display:none !important}
+  body{padding-top:0}
+}
+</style>
+</head>
+<body>
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-KPSXGQWC" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+
+<!-- NOTE: Navigation chrome (hamburger, nav, footer) injected by Worker HTMLRewriter -->
+
+<!-- Disclaimer Banner -->
+<div class="disclaimer">
+  We independently review everything we recommend. When you buy through our links, we may earn a commission.
+  <a href="https://${safeDomain}/affiliate-disclosure/">Learn more ›</a>
+</div>
+
+<main id="main-content">
+<div class="container">
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  <a href="https://${safeDomain}">Home</a> ›
+  <a href="https://${safeDomain}${safeBasePath}">${safeCategoryName}</a> ›
+  ${article.title}
+</nav>
+
+<article itemscope itemtype="https://schema.org/Article">
+  <h1 itemprop="headline">${article.title}</h1>
+
+  ${videoHeroHtml}
+
+  <div class="author-box" itemprop="author" itemscope itemtype="https://schema.org/Person">
+    <img src="${author.image || 'https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=100&h=100&fit=crop'}" alt="${author.name}" itemprop="image" loading="lazy">
+    <div class="author-info">
+      <h4 itemprop="name">${author.name}</h4>
+      <p class="credentials" itemprop="jobTitle">${author.title}</p>
+      <p class="bio">${author.credentials}</p>
+    </div>
+  </div>
+
+  <p class="disclosure">Disclosure: This article may contain affiliate links. We may earn a commission when you purchase through our links at no extra cost to you.</p>
+
+  ${article.quickAnswer ? `
+    <div class="quick-answer" itemprop="description">
+      <strong>Quick Answer:</strong> ${article.quickAnswer}
+    </div>
+  ` : ''}
+
+  ${article.keyTakeaways && article.keyTakeaways.length > 0 ? `
+    <div class="key-takeaways">
+      <strong>Key Takeaways:</strong>
+      <ul>
+        ${article.keyTakeaways.map(t => `<li>${t}</li>`).join('')}
+      </ul>
+    </div>
+  ` : ''}
+
+  ${comparisonTableHtml}
+
+  ${tocHtml}
+
+  ${heroImageHtml}
+
+  <div class="introduction" itemprop="articleBody">
+    ${article.introduction || ''}
+  </div>
+
+  ${sectionsHtml}
+
+  ${faqHtml}
+
+  <section class="conclusion">
+    <h2>Conclusion</h2>
+    ${article.conclusion || ''}
+  </section>
+
+  ${relatedArticlesHtml}
+</article>
+</div>
+</main>
+<!-- NOTE: Footer and menu JS injected by Worker HTMLRewriter -->
+</body>
+</html>`;
+}
+/**
+ * Update V3 sitemap with new article
+ */
+async function updateSitemap(slug, context) {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken)
+        return;
+    const categorySlug = context?.categorySlug || 'v3-articles';
+    try {
+        // Invalidate the cached sitemap for this category so the Worker regenerates it
+        // dynamically from KV keys on the next request
+        const cacheKey = `sitemap:${categorySlug}`;
+        const deleteUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(cacheKey)}`;
+        await fetch(deleteUrl, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${cfApiToken}` }
+        });
+        console.log(`[SEO-V3] 🗺️ Sitemap cache invalidated for ${categorySlug} (new article: ${slug})`);
+        // Purge Cloudflare CDN cache for the sitemap URL
+        await purgeSitemapCache(cfApiToken, categorySlug);
+    }
+    catch (error) {
+        console.error('[SEO-V3] Sitemap cache invalidation error:', error.message);
+    }
+}
+/**
+ * Check if an article already exists in KV
+ */
+async function articleExists(slug) {
+    const slugs = await fetchExistingArticleSlugs();
+    return slugs.has(slug);
+}
+/**
+ * Get the next prioritized keyword that hasn't been generated yet
+ * ATOMIC: Immediately adds the returned keyword to keywordsInProgress to prevent race conditions
+ */
+async function getNextPrioritizedKeyword() {
+    const existingSlugs = await fetchExistingArticleSlugs();
+    // Merge existing slugs with in-progress slugs to avoid duplicates between workers
+    const excludeSlugs = new Set([...existingSlugs, ...keywordsInProgress]);
+    const nextKeyword = (0, keyword_priorities_1.getNextKeyword)(excludeSlugs);
+    // ATOMIC: Lock the keyword immediately to prevent race conditions between workers
+    if (nextKeyword) {
+        keywordsInProgress.add(nextKeyword.slug);
+    }
+    return nextKeyword;
+}
+/**
+ * Get generation queue status
+ */
+async function getGenerationQueueStatus() {
+    const existingSlugs = await fetchExistingArticleSlugs();
+    const allKeywords = (0, keyword_priorities_1.getPrioritizedKeywords)();
+    let highPending = 0, mediumPending = 0, lowPending = 0;
+    for (const kw of allKeywords) {
+        if (!existingSlugs.has(kw.slug)) {
+            if (kw.priority === 'high')
+                highPending++;
+            else if (kw.priority === 'medium')
+                mediumPending++;
+            else
+                lowPending++;
+        }
+    }
+    const generated = existingSlugs.size;
+    const remaining = allKeywords.length - generated;
+    return {
+        totalKeywords: allKeywords.length,
+        generated,
+        remaining,
+        percentComplete: ((generated / allKeywords.length) * 100).toFixed(2),
+        nextKeyword: (0, keyword_priorities_1.getNextKeyword)(existingSlugs),
+        topPending: { high: highPending, medium: mediumPending, low: lowPending }
+    };
+}
+/**
+ * Direct CLI invocation using spawn with -p flag
+ * This uses the official GitHub Copilot CLI directly (what the SDK wraps)
+ * The SDK's session management has issues, but the CLI's -p flag works correctly
+ */
+async function generateWithCopilotCLI(prompt, timeout = 600000, maxRetries = 3) {
+    const fs = require('fs');
+    // Get GitHub token from the correct config directory (fast, ~1s, OK to keep sync)
+    let ghToken;
+    try {
+        const cleanEnv = { ...process.env };
+        delete cleanEnv.GITHUB_TOKEN;
+        delete cleanEnv.GH_TOKEN;
+        delete cleanEnv.COPILOT_GITHUB_TOKEN;
+        ghToken = (0, child_process_1.execSync)('gh auth token', {
+            encoding: 'utf8',
+            env: {
+                ...cleanEnv,
+                GH_CONFIG_DIR: '/home/runner/workspace/.config/gh',
+                HOME: '/home/runner'
+            }
+        }).trim();
+        console.log(`🔑 Got GitHub token (${ghToken.length} chars, starts with ${ghToken.substring(0, 4)})`);
+    }
+    catch (e) {
+        throw new Error('GitHub auth required. Run: gh auth login');
+    }
+    // Transient errors that should trigger retry
+    const retryableErrors = [
+        'missing finish_reason',
+        'ECONNRESET',
+        'ETIMEDOUT',
+        'socket hang up',
+        'rate limit',
+        'overloaded',
+        '503',
+        '502',
+        '429'
+    ];
+    let lastError = null;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        // Write prompt to temp file to avoid shell escaping issues
+        const promptFile = `/tmp/copilot-prompt-${Date.now()}.txt`;
+        fs.writeFileSync(promptFile, prompt);
+        console.log(`📝 Wrote prompt to ${promptFile} (attempt ${attempt}/${maxRetries})`);
+        try {
+            const wrapperScript = '/home/runner/workspace/ghl-marketplace-app/scripts/run-copilot.sh';
+            const cmd = `${wrapperScript} "${ghToken}" "${promptFile}" --model gpt-4.1 --allow-all-tools --no-ask-user`;
+            console.log(`🚀 Executing Copilot CLI via async spawn (attempt ${attempt})...`);
+            const result = await new Promise((resolve, reject) => {
+                const child = (0, child_process_1.spawn)('bash', ['-c', cmd], {
+                    cwd: '/home/runner/workspace/ghl-marketplace-app',
+                    env: process.env,
+                    stdio: ['pipe', 'pipe', 'pipe']
+                });
+                let stdout = '';
+                let stderr = '';
+                const maxBuffer = 50 * 1024 * 1024;
+                child.stdout.on('data', (data) => {
+                    stdout += data.toString();
+                    if (stdout.length > maxBuffer) {
+                        child.kill('SIGKILL');
+                        reject(new Error('Output exceeded max buffer'));
+                    }
+                });
+                child.stderr.on('data', (data) => { stderr += data.toString(); });
+                const timer = setTimeout(() => {
+                    child.kill('SIGKILL');
+                    reject(new Error(`CLI timeout after ${timeout}ms`));
+                }, timeout);
+                child.on('close', (code) => {
+                    clearTimeout(timer);
+                    if (code === 0)
+                        resolve(stdout);
+                    else
+                        reject(new Error(`CLI exited with code ${code}: ${stderr}`));
+                });
+                child.on('error', (err) => { clearTimeout(timer); reject(err); });
+            });
+            console.log(`✅ Got response (${result.length} chars)`);
+            // Clean up and return success
+            try {
+                fs.unlinkSync(promptFile);
+            }
+            catch (e) { }
+            return result;
+        }
+        catch (error) {
+            // Clean up prompt file
+            try {
+                fs.unlinkSync(promptFile);
+            }
+            catch (e) { }
+            const output = error.message || '';
+            console.error(`❌ CLI Error (attempt ${attempt}):`, output);
+            // Check if error is retryable
+            const isRetryable = retryableErrors.some(e => output.toLowerCase().includes(e.toLowerCase()));
+            if (isRetryable && attempt < maxRetries) {
+                const delay = Math.min(1000 * Math.pow(2, attempt), 30000);
+                console.log(`🔄 Retryable error detected, waiting ${delay}ms before retry...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                lastError = new Error(`Copilot CLI failed: ${output}`);
+                continue;
+            }
+            throw new Error(`Copilot CLI failed: ${output}`);
+        }
+    }
+    throw lastError || new Error('Copilot CLI failed after all retries');
+}
+/**
+ * OpenRouter Free Model Generation
+ * Uses verified free models - prioritizing NON-reasoning models for JSON output
+ */
+async function generateWithOpenRouter(prompt, timeout = 600000) {
+    const apiKey = doppler_secrets_1.secrets.get('OPENROUTER_API_KEY');
+    if (!apiKey) {
+        throw new Error('OPENROUTER_API_KEY not found in Doppler secrets');
+    }
+    // Use verified AVAILABLE free models (from OpenRouter API Jan 2026)
+    // Prioritizing non-reasoning models that output JSON cleanly
+    const freeModels = [
+        'meta-llama/llama-3.3-70b-instruct:free',
+        'mistralai/mistral-small-3.1-24b-instruct:free',
+        'google/gemma-3-27b-it:free',
+        'openai/gpt-oss-20b:free',
+        'qwen/qwen3-coder:free' // Qwen3 Coder - good for structured output
+    ];
+    let lastError = null;
+    for (const model of freeModels) {
+        try {
+            console.log(`🌐 [OpenRouter] Trying ${model}...`);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeout);
+            const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json',
+                    'HTTP-Referer': 'https://catsluvus.com',
+                    'X-Title': 'CatsLuvUs SEO Generator'
+                },
+                body: JSON.stringify({
+                    model: model,
+                    messages: [
+                        { role: 'user', content: prompt }
+                    ],
+                    max_tokens: 16000,
+                    temperature: 0.7
+                }),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.log(`⚠️ [OpenRouter] ${model} failed: ${response.status} - ${errorText.substring(0, 200)}`);
+                lastError = new Error(`OpenRouter ${model}: ${response.status}`);
+                continue;
+            }
+            const data = await response.json();
+            const content = data.choices?.[0]?.message?.content;
+            if (!content) {
+                console.log(`⚠️ [OpenRouter] ${model} returned empty content`);
+                lastError = new Error(`OpenRouter ${model}: empty response`);
+                continue;
+            }
+            // Strip reasoning tokens from models like DeepSeek-R1 that output <think>...</think>
+            let cleanContent = content;
+            if (content.includes('<think>')) {
+                cleanContent = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+                console.log(`🧠 [OpenRouter] Stripped reasoning tokens (${content.length} -> ${cleanContent.length} chars)`);
+            }
+            console.log(`✅ [OpenRouter] Got response from ${model} (${cleanContent.length} chars)`);
+            return cleanContent;
+        }
+        catch (error) {
+            if (error.name === 'AbortError') {
+                console.log(`⚠️ [OpenRouter] ${model} timed out`);
+                lastError = new Error(`OpenRouter ${model}: timeout`);
+            }
+            else {
+                console.log(`⚠️ [OpenRouter] ${model} error: ${error.message}`);
+                lastError = error;
+            }
+            continue;
+        }
+    }
+    throw lastError || new Error('All OpenRouter free models failed');
+}
+// Track which worker generated each article for A/B comparison
+let workerStats = {
+    copilot: { count: 0, totalScore: 0, avgScore: 0 },
+    cloudflare: { count: 0, totalScore: 0, avgScore: 0 }
+};
+function updateWorkerStats(worker, seoScore) {
+    workerStats[worker].count++;
+    workerStats[worker].totalScore += seoScore;
+    workerStats[worker].avgScore = Math.round(workerStats[worker].totalScore / workerStats[worker].count);
+}
+// For backward compatibility - spawn-based version (kept for reference)
+async function generateWithCopilotCLISpawn(prompt, timeout = 600000) {
+    const { spawn, execSync } = require('child_process');
+    // Get GitHub token from the correct config directory
+    let ghToken;
+    try {
+        // Must exclude any existing GITHUB_TOKEN/GH_TOKEN env vars so gh CLI reads from config file
+        const cleanEnv = { ...process.env };
+        delete cleanEnv.GITHUB_TOKEN;
+        delete cleanEnv.GH_TOKEN;
+        delete cleanEnv.COPILOT_GITHUB_TOKEN;
+        ghToken = execSync('gh auth token', {
+            encoding: 'utf8',
+            env: {
+                ...cleanEnv,
+                GH_CONFIG_DIR: '/home/runner/workspace/.config/gh',
+                HOME: '/home/runner'
+            }
+        }).trim();
+        console.log(`🔑 Got GitHub token (${ghToken.length} chars, starts with ${ghToken.substring(0, 4)})`);
+    }
+    catch (e) {
+        throw new Error('GitHub auth required. Run: gh auth login');
+    }
+    return new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+            cli.kill('SIGKILL');
+            reject(new Error(`CLI timeout after ${timeout}ms`));
+        }, timeout);
+        // Spawn with proper environment - all env vars must be in env object
+        const cli = spawn('npx', [
+            'copilot',
+            '-p', prompt,
+            '--model', 'gpt-4.1',
+            '--allow-all-tools',
+            '--no-ask-user'
+        ], {
+            shell: false,
+            env: {
+                // Include PATH and other essentials
+                PATH: process.env.PATH,
+                HOME: '/home/runner',
+                USER: 'runner',
+                // GitHub authentication
+                GH_TOKEN: ghToken,
+                GITHUB_TOKEN: ghToken,
+                COPILOT_GITHUB_TOKEN: ghToken,
+                // Use the WORKSPACE config dir where gh is actually authenticated
+                GH_CONFIG_DIR: '/home/runner/workspace/.config/gh',
+                XDG_CONFIG_HOME: '/home/runner/workspace/.config',
+                // Node related
+                NODE_PATH: process.env.NODE_PATH,
+                npm_config_prefix: process.env.npm_config_prefix
+            },
+            cwd: '/home/runner/workspace/ghl-marketplace-app'
+        });
+        let stdout = '';
+        let stderr = '';
+        cli.stdout.on('data', (data) => {
+            stdout += data.toString();
+        });
+        cli.stderr.on('data', (data) => {
+            stderr += data.toString();
+        });
+        cli.on('close', (code) => {
+            clearTimeout(timeoutId);
+            if (code === 0) {
+                resolve(stdout);
+            }
+            else {
+                reject(new Error(`CLI exited with code ${code}: ${stderr}`));
+            }
+        });
+        cli.on('error', (err) => {
+            clearTimeout(timeoutId);
+            reject(err);
+        });
+    });
+}
+/**
+ * SEO Tools for Copilot SDK Agent (using JSON Schema for parameters)
+ */
+async function getSEOTools() {
+    const { defineTool } = await loadCopilotSDK();
+    return [
+        defineTool('analyze_serp', {
+            description: 'Analyze Google SERP for a keyword to understand competitor content and identify gaps',
+            parameters: {
+                type: 'object',
+                properties: {
+                    keyword: { type: 'string', description: 'The keyword to analyze SERP for' }
+                },
+                required: ['keyword']
+            },
+            handler: async (args) => {
+                const result = await analyzeSERP(args.keyword);
+                return JSON.stringify(result, null, 2);
+            }
+        }),
+        defineTool('get_keyword_data', {
+            description: 'Get keyword data including related entities and SEO thresholds',
+            parameters: {
+                type: 'object',
+                properties: {
+                    keyword: { type: 'string', description: 'The keyword to get data for' }
+                },
+                required: ['keyword']
+            },
+            handler: async (args) => {
+                const lower = args.keyword.toLowerCase();
+                const isDog = lower.includes('dog') || lower.includes('puppy');
+                const isCat = lower.includes('cat') || lower.includes('kitten');
+                return JSON.stringify({
+                    keyword: args.keyword,
+                    slug: (0, seo_data_1.keywordToSlug)(args.keyword),
+                    entities: {
+                        base: seo_data_1.ENTITIES.base,
+                        specific: isDog ? seo_data_1.ENTITIES.dog : isCat ? seo_data_1.ENTITIES.cat : []
+                    },
+                    thresholds: seo_data_1.SEO_THRESHOLDS,
+                    credibleSources: Object.values(seo_data_1.CREDIBLE_SOURCES)
+                }, null, 2);
+            }
+        }),
+        defineTool('get_expert_author', {
+            description: 'Get an EEAT expert author for a topic',
+            parameters: {
+                type: 'object',
+                properties: {
+                    topic: { type: 'string', description: 'The topic/title to get an author for' }
+                },
+                required: ['topic']
+            },
+            handler: async (args) => {
+                const author = (0, seo_data_1.getAuthorForTopic)(args.topic);
+                return JSON.stringify(author, null, 2);
+            }
+        }),
+        defineTool('deploy_to_cloudflare', {
+            description: 'Deploy article HTML to Cloudflare KV for live serving',
+            parameters: {
+                type: 'object',
+                properties: {
+                    slug: { type: 'string', description: 'URL slug for the article' },
+                    html: { type: 'string', description: 'Full HTML content to deploy' },
+                    category: { type: 'string', description: 'Category slug (e.g., "cat-dna-testing" or "petinsurance"). Defaults to "petinsurance".' }
+                },
+                required: ['slug', 'html']
+            },
+            handler: async (args) => {
+                const category = args.category || 'petinsurance';
+                const result = await deployToCloudflareKV(args.slug, args.html, category);
+                return JSON.stringify({
+                    ...result,
+                    liveUrl: result.success ? `https://catsluvus.com/${category}/${args.slug}` : null
+                });
+            }
+        }),
+        defineTool('build_article_html', {
+            description: 'Build full SEO-optimized HTML from article JSON data',
+            parameters: {
+                type: 'object',
+                properties: {
+                    article: {
+                        type: 'object',
+                        properties: {
+                            title: { type: 'string' },
+                            metaDescription: { type: 'string' },
+                            introduction: { type: 'string' },
+                            sections: { type: 'array' },
+                            faqs: { type: 'array' },
+                            comparisonTable: {
+                                type: 'object',
+                                properties: {
+                                    headers: { type: 'array', items: { type: 'string' }, description: 'Table headers: Product, Features, Pros, Cons, Amazon Search' },
+                                    rows: { type: 'array', items: { type: 'array', items: { type: 'string' } }, description: 'Table rows with 5 columns each, last column is product name for Amazon search' }
+                                },
+                                required: ['headers', 'rows']
+                            },
+                            conclusion: { type: 'string' },
+                            wordCount: { type: 'number' }
+                        },
+                        required: ['title', 'metaDescription', 'introduction', 'sections', 'faqs', 'comparisonTable', 'conclusion', 'wordCount']
+                    },
+                    slug: { type: 'string' },
+                    keyword: { type: 'string' }
+                },
+                required: ['article', 'slug', 'keyword']
+            },
+            handler: async (args) => {
+                const html = buildArticleHtml(args.article, args.slug, args.keyword, activeCategoryContext, undefined, undefined, undefined);
+                return html.substring(0, 500) + '... [HTML built successfully, ' + html.length + ' chars]';
+            }
+        })
+    ];
+}
+/**
+ * Generate article using GitHub Copilot CLI directly
+ * Uses npx copilot -p (official CLI prompt mode that actually works)
+ */
+async function generateWithCopilotSDK(keyword) {
+    const slug = (0, seo_data_1.keywordToSlug)(keyword);
+    try {
+        console.log(`🤖 [Copilot CLI] Generating article for: "${keyword}"`);
+        // SERP Analysis - Analyze what's ranking #1-10 to beat competitors
+        console.log(`🔍 [SERP] Analyzing top 10 Google results for: "${keyword}"`);
+        const serpAnalysis = await analyzeSERP(keyword);
+        // Build SERP insights for the prompt with competitor headings, FAQs, and entities
+        const competitorHeadingsText = serpAnalysis.competitorHeadings.length > 0
+            ? `\nCompetitor H2/H3 headings (COVER ALL these topics): ${serpAnalysis.competitorHeadings.slice(0, 12).join(' | ')}`
+            : '';
+        const competitorFAQsText = serpAnalysis.competitorFAQs.length > 0
+            ? `\nCompetitor FAQ questions (ANSWER ALL these): ${serpAnalysis.competitorFAQs.slice(0, 8).join(' | ')}`
+            : '';
+        const competitorEntitiesText = serpAnalysis.competitorEntities && serpAnalysis.competitorEntities.length > 0
+            ? `\nKey entities/brands competitors mention (MUST REFERENCE): ${serpAnalysis.competitorEntities.slice(0, 10).join(', ')}`
+            : '';
+        const serpInsights = serpAnalysis.topResults.length > 0
+            ? `\n\nCOMPETITOR ANALYSIS (Based on scraping top 10 Google results):
+Top-ranking titles: ${serpAnalysis.topResults.slice(0, 5).map(r => `"${r.title}"`).join(', ')}
+Topics ALL competitors cover (MUST INCLUDE): ${serpAnalysis.commonTopics.join(', ')}${competitorHeadingsText}${competitorFAQsText}${competitorEntitiesText}
+Content gaps to exploit (UNIQUE ANGLES to beat competitors): ${serpAnalysis.contentGaps.join(', ')}
+Target word count: ${serpAnalysis.targetWordCount}+ words (competitors average ${serpAnalysis.avgWordCount} words)
+Average competitor title length: ${Math.round(serpAnalysis.avgTitleLength)} characters
+
+CRITICAL: Your article MUST cover every topic/heading listed above, answer every FAQ question, and reference key entities/brands competitors mention. This ensures comprehensive coverage that Google rewards with Position 1.\n`
+            : `\n\nCOMPETITOR ANALYSIS:
+Topics to cover: ${serpAnalysis.commonTopics.join(', ')}
+Content gaps to exploit: ${serpAnalysis.contentGaps.join(', ')}
+Target word count: ${serpAnalysis.targetWordCount}+ words\n`;
+        // Fetch existing articles for internal linking
+        const existingSlugs = await fetchExistingArticleSlugs();
+        const existingArticlesList = Array.from(existingSlugs).slice(0, 100).join(', ');
+        // Fetch real People Also Ask questions from Google (FREE)
+        const paaQuestions = await fetchPAAQuestions(keyword);
+        const paaQuestionsText = paaQuestions.length > 0
+            ? `\n\nPEOPLE ALSO ASK (Use these EXACT questions as your FAQs - they are real Google search queries):\n${paaQuestions.map((q, i) => `${i + 1}. ${q.question}`).join('\n')}\n`
+            : '';
+        const prompt = `You are an expert SEO content writer for pet insurance. Generate an SEO article about "${keyword}" optimized for Google Featured Snippets (Position 0).
+${serpInsights}
+${paaQuestionsText}
+Requirements:
+- 3000+ words comprehensive content
+- Use "${keyword}" naturally 8-12 times throughout
+- Include comparison table with real data for: Lemonade, Healthy Paws, Trupanion, ASPCA
+- Include 8+ detailed FAQs with 150+ word answers (USE THE "PEOPLE ALSO ASK" QUESTIONS ABOVE if provided)
+- Include expert quotes and real pricing data
+- Write in an authoritative, trustworthy tone
+- Include 3-5 external authority links naturally in the content (official insurance provider sites, veterinary associations like AVMA, state insurance regulators, or other relevant .gov/.org sources)
+
+INTERNAL LINKING (Critical for SEO):
+Add 3-5 internal links to related articles from our existing content. Select the most relevant slugs from this list:
+${existingArticlesList}
+
+Use descriptive anchor text (not "click here"). Insert links naturally within the content where they add value.
+
+CRITICAL FOR RANKING #1 - Featured Snippet Optimization:
+1. quickAnswer: A 40-60 word DIRECT answer that Google can extract for Position 0. Start with "The [keyword] is..." format.
+2. keyTakeaways: 4-5 bullet points (each 15-25 words) that summarize the key information.
+3. FAQs must have concise first sentences (under 50 words) that directly answer the question, then expand.
+4. images: 3 relevant Unsplash stock photo URLs with SEO alt text and captions.
+5. externalLinks: 3-5 authority links with full URLs to official sources relevant to the topic (insurance providers, veterinary organizations, government regulators).
+
+STRICT SEO REQUIREMENTS FOR 100/100 SCORE (CRITICAL - COUNT CHARACTERS):
+**TITLE: EXACTLY 50-55 CHARACTERS (not 56+, not 49-)**
+- Count EVERY character including spaces before outputting
+- Example: "Best Cat Insurance Plans 2026: Expert Buyer Guide" = 50 chars ✓
+- Use shorter words: "vs" not "versus", "&" not "and"
+
+**META DESCRIPTION: EXACTLY 145-155 CHARACTERS (not 156+, not 144-)**
+- Count EVERY character before outputting
+- Include primary keyword naturally once
+- Include call-to-action (Discover, Compare, Learn)
+
+**KEYWORD DENSITY: 1.0-1.5%** (For 3000 words = use keyword 30-45 times)
+**HEADINGS: 4-8 unique H2s** - No duplicates, keyword in 2+ H2s
+**LINKS: 3-5 internal + 2-3 external authority links**
+
+AI WRITING DETECTION AVOIDANCE (CRITICAL FOR SEO - from marketing-psychology skill):
+Avoid these patterns that trigger AI detection algorithms:
+- NEVER use em dashes (—). Use commas, colons, or parentheses instead.
+- AVOID verbs: delve, leverage, utilize, foster, bolster, underscore, unveil, navigate, streamline, enhance, endeavour, embark, unravel
+- AVOID adjectives: robust, comprehensive, pivotal, crucial, vital, transformative, cutting-edge, groundbreaking, seamless, nuanced, holistic, innovative, multifaceted
+- AVOID phrases: "In today's fast-paced world", "It's important to note", "Let's delve into", "That being said", "At its core", "In the realm of", "It goes without saying"
+- AVOID filler words: absolutely, actually, basically, certainly, essentially, extremely, fundamentally, incredibly, naturally, obviously, significantly, truly, ultimately
+- Use varied sentence lengths and natural conversational tone
+- Include contractions (don't, can't, won't) for natural voice
+- Start some sentences with "And" or "But" for human-like flow
+- Write like a human expert, not an AI
+
+Return ONLY valid JSON (no markdown code blocks, no explanation before/after):
+{
+  "title": "[MAX 55 CHARS - SHORTER IS BETTER] SEO title with '${keyword}'",
+  "metaDescription": "[MAX 155 CHARS] Description with '${keyword}'",
+  "quickAnswer": "40-60 word direct answer starting with 'The ${keyword}...' that Google can pull for Featured Snippet Position 0. Include the top recommendation and key facts.",
+  "keyTakeaways": [
+    "First key point in 15-25 words with specific data",
+    "Second key point about costs or coverage",
+    "Third key point about best provider",
+    "Fourth key point about what to avoid",
+    "Fifth key point with actionable advice"
+  ],
+  "images": [
+    {"url": "https://images.unsplash.com/photo-1587300003388-59208cc962cb?w=800&q=80", "alt": "Dog at veterinarian for ${keyword}", "caption": "Understanding your pet insurance options is key to protecting your furry family member."},
+    {"url": "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=800&q=80", "alt": "Cat receiving medical care for ${keyword}", "caption": "Quality pet insurance ensures your cat gets the care they need."},
+    {"url": "https://images.unsplash.com/photo-1450778869180-41d0601e046e?w=800&q=80", "alt": "Happy pet owner with dog discussing ${keyword}", "caption": "The right insurance plan gives pet owners peace of mind."}
+  ],
+  "introduction": "400+ words introducing the topic, establishing expertise",
+  "sections": [
+    {"heading": "UNIQUE H2 heading about coverage basics (no duplicates)", "content": "500+ words of detailed content"},
+    {"heading": "DIFFERENT H2 about cost analysis (must be unique)", "content": "500+ words"},
+    {"heading": "DISTINCT H2 comparing providers (all headings unique)", "content": "500+ words"},
+    {"heading": "SEPARATE H2 on claims process (no repeated text)", "content": "500+ words"}
+  ],
+  "comparisonTable": {
+    "headers": ["Provider", "Monthly Cost", "Deductible", "Reimbursement", "Annual Limit"],
+    "rows": [
+      ["Lemonade", "$15-40", "$100-500", "70-90%", "$5k-100k"],
+      ["Healthy Paws", "$20-50", "$100-500", "70-90%", "Unlimited"],
+      ["Trupanion", "$30-70", "$0-1000", "90%", "Unlimited"],
+      ["ASPCA", "$18-45", "$100-500", "70-90%", "$5k-10k"]
+    ]
+  },
+  "faqs": [
+    {"question": "What is the ${keyword}?", "answer": "Start with 1-sentence direct answer under 50 words, then expand to 150+ words with details"},
+    {"question": "How much does ${keyword} cost?", "answer": "Start with specific price range, then 150+ word detailed breakdown"},
+    {"question": "Which provider offers the ${keyword}?", "answer": "Name the top provider first, then 150+ word comparison"},
+    {"question": "Is ${keyword} worth it?", "answer": "Start with Yes/No and why in 1 sentence, then 150+ word explanation"},
+    {"question": "Claims process question?", "answer": "150+ word detailed answer"},
+    {"question": "Provider comparison question?", "answer": "150+ word detailed answer"},
+    {"question": "Waiting period question?", "answer": "150+ word detailed answer"},
+    {"question": "Pre-existing conditions question?", "answer": "150+ word detailed answer"}
+  ],
+  "conclusion": "300+ words summarizing key points and call to action",
+  "externalLinks": [
+    {"url": "https://example-provider.com", "text": "anchor text", "context": "sentence where link appears naturally"},
+    {"url": "https://example-authority.org", "text": "anchor text", "context": "sentence where link appears naturally"}
+  ],
+  "internalLinks": [
+    {"url": "/category/related-article-slug", "anchorText": "descriptive anchor text", "context": "sentence where internal link should appear naturally in the content"}
+  ],
+  "providerProsCons": [
+    {"provider": "Lemonade", "pros": ["Low monthly premiums starting at $15", "Fast AI-powered claims processing", "User-friendly mobile app"], "cons": ["Lower annual limits than competitors", "No wellness add-on available", "Limited coverage for older pets"]},
+    {"provider": "Healthy Paws", "pros": ["Unlimited annual payouts", "No caps on claims", "Fast reimbursement"], "cons": ["Higher premiums for comprehensive coverage", "No wellness coverage option", "Premiums increase with age"]},
+    {"provider": "Trupanion", "pros": ["90% reimbursement rate", "Direct vet payment option", "Covers hereditary conditions"], "cons": ["Higher monthly costs", "Only one reimbursement tier", "Longer waiting periods"]},
+    {"provider": "ASPCA", "pros": ["Flexible deductible options", "Wellness add-ons available", "Good for preventive care"], "cons": ["Lower annual limits", "Customer service complaints", "Slower claims processing"]}
+  ],
+  "wordCount": 3500
+}`;
+        // Use direct CLI invocation (10 minute timeout for long articles)
+        const content = await generateWithCopilotCLI(prompt, 600000);
+        console.log(`🤖 [Copilot CLI] Received response (${content.length} chars)`);
+        // Extract JSON from response
+        const jsonMatch = content.match(/\{[\s\S]*"title"[\s\S]*"conclusion"[\s\S]*\}/);
+        if (!jsonMatch) {
+            console.log('⚠️ [Copilot CLI] No JSON found. Response preview:', content.substring(0, 500));
+            throw new Error('No article JSON in Copilot response');
+        }
+        // Sanitize JSON: remove control characters that break parsing
+        const sanitizedJson = jsonMatch[0]
+            .replace(/[\x00-\x1F\x7F]/g, (char) => {
+            // Preserve valid JSON whitespace: tab, newline, carriage return
+            if (char === '\t' || char === '\n' || char === '\r')
+                return char;
+            // Remove other control characters
+            return '';
+        })
+            .replace(/\n\s*\n/g, '\n'); // Collapse multiple newlines
+        const article = JSON.parse(sanitizedJson);
+        console.log(`✅ [Copilot CLI] Generated: ${article.title}`);
+        // Enforce SEO limits - truncate title and meta description
+        const seoLimits = (0, seo_data_1.enforceSEOLimits)(article);
+        article.title = seoLimits.title;
+        article.metaDescription = seoLimits.metaDescription;
+        // Search for relevant YouTube video
+        let video;
+        try {
+            const videoResult = await searchYouTubeVideo(keyword);
+            if (videoResult.success && videoResult.videos && videoResult.videos.length > 0) {
+                video = videoResult.videos[0];
+                console.log(`🎬 [YouTube] Found video: "${video.title}" by ${video.channel}`);
+            }
+        }
+        catch (err) {
+            console.log(`⚠️ [YouTube] Search skipped: ${err.message}`);
+        }
+        // Build HTML and deploy to Cloudflare KV - pass activeCategoryContext for dynamic breadcrumbs/URLs
+        const html = buildArticleHtml(article, slug, keyword, activeCategoryContext, video, undefined, undefined);
+        // Calculate SEO score using seord library
+        const seoScore = await calculateSEOScore(html, keyword, article.title, article.metaDescription);
+        console.log(`📊 [SEO Score] ${slug}: ${seoScore.score}/100`);
+        // Track worker stats
+        updateWorkerStats('copilot', seoScore.score);
+        const deployResult = await deployToCloudflareKV(slug, html);
+        if (deployResult.success) {
+            console.log(`☁️ [Copilot CLI] Deployed to KV: ${slug}`);
+        }
+        // Use dynamic category context for liveUrl
+        const categoryPath = activeCategoryContext?.basePath || '/petinsurance';
+        const categoryDomainForUrl = activeCategoryContext?.domain || 'catsluvus.com';
+        return {
+            success: true,
+            article,
+            slug,
+            deployed: deployResult.success,
+            liveUrl: deployResult.success ? `https://${categoryDomainForUrl}${categoryPath}/${slug}` : null,
+            seoScore: seoScore.score,
+            worker: 'copilot',
+            serpAnalysis: {
+                competitorsAnalyzed: serpAnalysis.topResults.length,
+                topicsFound: serpAnalysis.commonTopics,
+                competitorHeadings: serpAnalysis.competitorHeadings.slice(0, 10),
+                competitorFAQs: serpAnalysis.competitorFAQs.slice(0, 8),
+                competitorEntities: serpAnalysis.competitorEntities?.slice(0, 10) || [],
+                contentGaps: serpAnalysis.contentGaps,
+                targetWordCount: serpAnalysis.targetWordCount,
+                avgCompetitorWordCount: serpAnalysis.avgWordCount
+            }
+        };
+    }
+    catch (error) {
+        console.error(`❌ [Copilot CLI] Error:`, error.message);
+        return { success: false, error: error.message };
+    }
+}
+/**
+ * Generate article using Cloudflare Workers AI
+ * Same logic as generateWithCopilotSDK but uses Cloudflare AI (replaced unreliable OpenRouter FREE)
+ * Includes AI writing detection avoidance rules from coreyhaines31/marketingskills
+ */
+async function generateWithCloudflareAI_SDK(keyword) {
+    const slug = (0, seo_data_1.keywordToSlug)(keyword);
+    try {
+        console.log(`☁️ [Cloudflare AI] Generating article for: "${keyword}"`);
+        // SERP Analysis - Analyze what's ranking #1-10 to beat competitors
+        console.log(`🔍 [SERP] Analyzing top 10 Google results for: "${keyword}"`);
+        const serpAnalysis = await analyzeSERP(keyword);
+        // Build SERP insights for the prompt with competitor headings, FAQs, and entities
+        const competitorHeadingsText = serpAnalysis.competitorHeadings.length > 0
+            ? `\nCompetitor H2/H3 headings (COVER ALL these topics): ${serpAnalysis.competitorHeadings.slice(0, 12).join(' | ')}`
+            : '';
+        const competitorFAQsText = serpAnalysis.competitorFAQs.length > 0
+            ? `\nCompetitor FAQ questions (ANSWER ALL these): ${serpAnalysis.competitorFAQs.slice(0, 8).join(' | ')}`
+            : '';
+        const competitorEntitiesText = serpAnalysis.competitorEntities && serpAnalysis.competitorEntities.length > 0
+            ? `\nKey entities/brands competitors mention (MUST REFERENCE): ${serpAnalysis.competitorEntities.slice(0, 10).join(', ')}`
+            : '';
+        const serpInsights = serpAnalysis.topResults.length > 0
+            ? `\n\nCOMPETITOR ANALYSIS (Based on scraping top 10 Google results):
+Top-ranking titles: ${serpAnalysis.topResults.slice(0, 5).map(r => `"${r.title}"`).join(', ')}
+Topics ALL competitors cover (MUST INCLUDE): ${serpAnalysis.commonTopics.join(', ')}${competitorHeadingsText}${competitorFAQsText}${competitorEntitiesText}
+Content gaps to exploit (UNIQUE ANGLES to beat competitors): ${serpAnalysis.contentGaps.join(', ')}
+Target word count: ${serpAnalysis.targetWordCount}+ words (competitors average ${serpAnalysis.avgWordCount} words)
+Average competitor title length: ${Math.round(serpAnalysis.avgTitleLength)} characters
+
+CRITICAL: Your article MUST cover every topic/heading listed above, answer every FAQ question, and reference key entities/brands competitors mention. This ensures comprehensive coverage that Google rewards with Position 1.\n`
+            : `\n\nCOMPETITOR ANALYSIS:
+Topics to cover: ${serpAnalysis.commonTopics.join(', ')}
+Content gaps to exploit: ${serpAnalysis.contentGaps.join(', ')}
+Target word count: ${serpAnalysis.targetWordCount}+ words\n`;
+        // Fetch existing articles for internal linking
+        const existingSlugs = await fetchExistingArticleSlugs();
+        const existingArticlesList = Array.from(existingSlugs).slice(0, 100).join(', ');
+        // Fetch real People Also Ask questions from Google (FREE)
+        const paaQuestions = await fetchPAAQuestions(keyword);
+        const paaQuestionsText = paaQuestions.length > 0
+            ? `\n\nPEOPLE ALSO ASK (Use these EXACT questions as your FAQs - they are real Google search queries):\n${paaQuestions.map((q, i) => `${i + 1}. ${q.question}`).join('\n')}\n`
+            : '';
+        const prompt = `You are an expert SEO content writer for pet insurance. Generate an SEO article about "${keyword}" optimized for Google Featured Snippets (Position 0).
+${serpInsights}
+${paaQuestionsText}
+Requirements:
+- 3000+ words comprehensive content
+- Use "${keyword}" naturally 8-12 times throughout
+- Include comparison table with real data for: Lemonade, Healthy Paws, Trupanion, ASPCA
+- Include 8+ detailed FAQs with 150+ word answers (USE THE "PEOPLE ALSO ASK" QUESTIONS ABOVE if provided)
+- Include expert quotes and real pricing data
+- Write in an authoritative, trustworthy tone
+- Include 3-5 external authority links naturally in the content
+
+INTERNAL LINKING (Critical for SEO):
+Add 3-5 internal links to related articles. Select the most relevant slugs from this list:
+${existingArticlesList}
+
+STRICT SEO REQUIREMENTS:
+**TITLE LENGTH: MAXIMUM 55 CHARACTERS**
+**META DESCRIPTION: MAXIMUM 155 CHARACTERS**
+- All H2/H3 headings MUST be unique
+
+AI WRITING DETECTION AVOIDANCE (CRITICAL FOR SEO):
+Avoid these patterns that trigger AI detection algorithms:
+- NEVER use em dashes (—). Use commas, colons, or parentheses instead.
+- AVOID verbs: delve, leverage, utilize, foster, bolster, underscore, unveil, navigate, streamline, enhance, endeavour
+- AVOID adjectives: robust, comprehensive, pivotal, crucial, vital, transformative, cutting-edge, groundbreaking, seamless, nuanced, holistic
+- AVOID phrases: "In today's fast-paced world", "It's important to note", "Let's delve into", "That being said", "At its core", "In the realm of"
+- AVOID filler words: absolutely, actually, basically, certainly, essentially, extremely, fundamentally, incredibly, naturally, obviously, significantly, truly, ultimately
+- Use varied sentence lengths and natural conversational tone
+- Write like a human expert, not an AI
+
+Return ONLY valid JSON (no markdown code blocks):
+{
+  "title": "[MAX 55 CHARS] SEO title with '${keyword}'",
+  "metaDescription": "[MAX 155 CHARS] Description with '${keyword}'",
+  "quickAnswer": "40-60 word direct answer for Featured Snippet",
+  "keyTakeaways": ["5 key points, 15-25 words each"],
+  "images": [
+    {"url": "https://images.unsplash.com/photo-1587300003388-59208cc962cb?w=800&q=80", "alt": "Dog at vet", "caption": "Pet insurance protects your furry family."},
+    {"url": "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=800&q=80", "alt": "Cat care", "caption": "Quality care for your cat."},
+    {"url": "https://images.unsplash.com/photo-1450778869180-41d0601e046e?w=800&q=80", "alt": "Pet owner", "caption": "Peace of mind for pet owners."}
+  ],
+  "introduction": "400+ words",
+  "sections": [
+    {"heading": "Unique H2", "content": "500+ words"},
+    {"heading": "Different H2", "content": "500+ words"},
+    {"heading": "Another H2", "content": "500+ words"},
+    {"heading": "Final H2", "content": "500+ words"}
+  ],
+  "comparisonTable": {
+    "headers": ["Provider", "Monthly Cost", "Deductible", "Reimbursement", "Annual Limit"],
+    "rows": [
+      ["Lemonade", "$15-40", "$100-500", "70-90%", "$5k-100k"],
+      ["Healthy Paws", "$20-50", "$100-500", "70-90%", "Unlimited"],
+      ["Trupanion", "$30-70", "$0-1000", "90%", "Unlimited"],
+      ["ASPCA", "$18-45", "$100-500", "70-90%", "$5k-10k"]
+    ]
+  },
+  "faqs": [
+    {"question": "FAQ 1?", "answer": "150+ word answer"},
+    {"question": "FAQ 2?", "answer": "150+ word answer"},
+    {"question": "FAQ 3?", "answer": "150+ word answer"},
+    {"question": "FAQ 4?", "answer": "150+ word answer"},
+    {"question": "FAQ 5?", "answer": "150+ word answer"},
+    {"question": "FAQ 6?", "answer": "150+ word answer"},
+    {"question": "FAQ 7?", "answer": "150+ word answer"},
+    {"question": "FAQ 8?", "answer": "150+ word answer"}
+  ],
+  "conclusion": "300+ words",
+  "externalLinks": [{"url": "https://example.com", "text": "anchor", "context": "sentence"}],
+  "internalLinks": [{"url": "/category/article-slug", "anchorText": "anchor", "context": "sentence"}],
+  "providerProsCons": [
+    {"provider": "Lemonade", "pros": ["3 pros"], "cons": ["3 cons"]},
+    {"provider": "Healthy Paws", "pros": ["3 pros"], "cons": ["3 cons"]},
+    {"provider": "Trupanion", "pros": ["3 pros"], "cons": ["3 cons"]},
+    {"provider": "ASPCA", "pros": ["3 pros"], "cons": ["3 cons"]}
+  ],
+  "wordCount": 3500
+}`;
+        // Use Cloudflare Workers AI (replaced OpenRouter due to reliability issues)
+        const aiResult = await (0, cloudflare_ai_client_1.generateWithCloudflareAI)(prompt, { timeout: 600000 });
+        const content = aiResult.content;
+        const usedModel = aiResult.model;
+        console.log(`☁️ [Cloudflare AI] Received response (${content.length} chars) using ${usedModel}`);
+        // Extract JSON from response - robust extraction with string-aware brace matching
+        let article; // Definite assignment assertion - will be assigned or we throw
+        const jsonStart = content.indexOf('{');
+        if (jsonStart === -1) {
+            console.log('⚠️ [Cloudflare AI] No JSON found. Response preview:', content.substring(0, 500));
+            throw new Error('No article JSON in Cloudflare AI response');
+        }
+        // String-aware brace matching (handles braces inside quoted strings)
+        let braceCount = 0;
+        let jsonEnd = -1;
+        let inString = false;
+        let escapeNext = false;
+        for (let i = jsonStart; i < content.length; i++) {
+            const char = content[i];
+            if (escapeNext) {
+                escapeNext = false;
+                continue;
+            }
+            if (char === '\\') {
+                escapeNext = true;
+                continue;
+            }
+            if (char === '"' && !escapeNext) {
+                inString = !inString;
+                continue;
+            }
+            if (!inString) {
+                if (char === '{')
+                    braceCount++;
+                if (char === '}') {
+                    braceCount--;
+                    if (braceCount === 0) {
+                        jsonEnd = i + 1;
+                        break;
+                    }
+                }
+            }
+        }
+        if (jsonEnd === -1) {
+            throw new Error('No valid JSON object found in Cloudflare AI response');
+        }
+        const rawJson = content.substring(jsonStart, jsonEnd);
+        console.log(`🔍 [Cloudflare AI] Extracted JSON: ${rawJson.length} chars`);
+        // Sanitize JSON - properly escape control characters inside strings
+        // This handles newlines, tabs, and other control chars that break JSON.parse
+        const sanitizedJson = rawJson
+            // Remove all control characters except newline/tab/carriage return outside strings
+            .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+            // Fix unescaped newlines inside JSON strings by converting them to escaped \\n
+            .replace(/"([^"\\]|\\.)*"/g, (match) => {
+            return match
+                .replace(/\n/g, '\\n')
+                .replace(/\r/g, '\\r')
+                .replace(/\t/g, '\\t');
+        })
+            .replace(/\n\s*\n/g, '\n');
+        try {
+            article = JSON.parse(sanitizedJson);
+        }
+        catch (parseError) {
+            const errorPos = parseError.message.match(/position (\d+)/)?.[1];
+            console.log(`⚠️ [Cloudflare AI] Parse failed at position ${errorPos || 'unknown'}`);
+            console.log(`❌ [Cloudflare AI] Error: ${parseError.message}`);
+            // Enhanced JSON repair: Try multiple strategies
+            let repaired = false;
+            // Strategy 1: Truncate at error position and close properly
+            if (errorPos && parseInt(errorPos) > 500) {
+                const truncPos = parseInt(errorPos);
+                let truncated = sanitizedJson.substring(0, truncPos);
+                // Find last complete property (ends with " or number or true/false/null)
+                const lastCompleteMatch = truncated.match(/.*["\d\]}\w](,?\s*)$/s);
+                if (lastCompleteMatch) {
+                    truncated = truncated.replace(/,?\s*$/, '');
+                    // Count open braces/brackets and close them
+                    let openBraces = (truncated.match(/{/g) || []).length - (truncated.match(/}/g) || []).length;
+                    let openBrackets = (truncated.match(/\[/g) || []).length - (truncated.match(/]/g) || []).length;
+                    // Close arrays first, then objects
+                    truncated += ']'.repeat(Math.max(0, openBrackets));
+                    truncated += '}'.repeat(Math.max(0, openBraces));
+                    try {
+                        article = JSON.parse(truncated);
+                        console.log(`✅ [Cloudflare AI] Recovered by truncating at error position + closing`);
+                        repaired = true;
+                    }
+                    catch (e) { }
+                }
+            }
+            // Strategy 2: Progressive truncation from end
+            if (!repaired) {
+                let lastValidBrace = sanitizedJson.lastIndexOf('}');
+                while (lastValidBrace > 1000 && !repaired) {
+                    const truncated = sanitizedJson.substring(0, lastValidBrace + 1);
+                    const opens = (truncated.match(/{/g) || []).length;
+                    const closes = (truncated.match(/}/g) || []).length;
+                    if (opens === closes) {
+                        try {
+                            article = JSON.parse(truncated);
+                            console.log(`✅ [Cloudflare AI] Recovered JSON by truncating at position ${lastValidBrace}`);
+                            repaired = true;
+                            break;
+                        }
+                        catch (e) { }
+                    }
+                    lastValidBrace = sanitizedJson.lastIndexOf('}', lastValidBrace - 1);
+                }
+            }
+            // Strategy 3: Find and remove incomplete trailing properties
+            if (!repaired) {
+                // Remove trailing incomplete property like ,"key": "value... or ,"key": [incomplete
+                let cleaned = sanitizedJson
+                    .replace(/,\s*"[^"]*":\s*"[^"]*$/s, '') // Remove incomplete string value
+                    .replace(/,\s*"[^"]*":\s*\[[^\]]*$/s, '') // Remove incomplete array
+                    .replace(/,\s*"[^"]*":\s*{[^}]*$/s, '') // Remove incomplete object
+                    .replace(/,\s*"[^"]*":\s*$/s, ''); // Remove property with no value
+                // Close remaining open braces
+                let openBraces = (cleaned.match(/{/g) || []).length - (cleaned.match(/}/g) || []).length;
+                let openBrackets = (cleaned.match(/\[/g) || []).length - (cleaned.match(/]/g) || []).length;
+                cleaned += ']'.repeat(Math.max(0, openBrackets));
+                cleaned += '}'.repeat(Math.max(0, openBraces));
+                try {
+                    article = JSON.parse(cleaned);
+                    console.log(`✅ [Cloudflare AI] Recovered by removing incomplete properties`);
+                    repaired = true;
+                }
+                catch (e) { }
+            }
+            if (!repaired) {
+                console.log(`❌ [OpenRouter] Error: ${parseError.message}`);
+                throw parseError;
+            }
+        }
+        console.log(`✅ [OpenRouter] Generated: ${article.title}`);
+        // Enforce SEO limits - truncate title and meta description
+        const seoLimits = (0, seo_data_1.enforceSEOLimits)(article);
+        article.title = seoLimits.title;
+        article.metaDescription = seoLimits.metaDescription;
+        // Search for relevant YouTube video
+        let video;
+        try {
+            const videoResult = await searchYouTubeVideo(keyword);
+            if (videoResult.success && videoResult.videos && videoResult.videos.length > 0) {
+                video = videoResult.videos[0];
+                console.log(`🎬 [YouTube] Found video: "${video.title}" by ${video.channel}`);
+            }
+        }
+        catch (err) {
+            console.log(`⚠️ [YouTube] Search skipped: ${err.message}`);
+        }
+        // Build HTML and deploy to Cloudflare KV - pass activeCategoryContext for dynamic breadcrumbs/URLs
+        const html = buildArticleHtml(article, slug, keyword, activeCategoryContext, video, undefined, undefined);
+        // Calculate SEO score
+        const seoScore = await calculateSEOScore(html, keyword, article.title, article.metaDescription);
+        console.log(`📊 [SEO Score] ${slug}: ${seoScore.score}/100`);
+        // Track worker stats
+        updateWorkerStats('cloudflare', seoScore.score);
+        const deployResult = await deployToCloudflareKV(slug, html);
+        if (deployResult.success) {
+            console.log(`☁️ [OpenRouter] Deployed to KV: ${slug}`);
+        }
+        // Use dynamic category context for liveUrl
+        const categoryPath = activeCategoryContext?.basePath || '/petinsurance';
+        const categoryDomainForUrl = activeCategoryContext?.domain || 'catsluvus.com';
+        return {
+            success: true,
+            article,
+            slug,
+            deployed: deployResult.success,
+            liveUrl: deployResult.success ? `https://${categoryDomainForUrl}${categoryPath}/${slug}` : null,
+            seoScore: seoScore.score,
+            worker: 'cloudflare',
+            model: usedModel,
+            serpAnalysis: {
+                competitorsAnalyzed: serpAnalysis.topResults.length,
+                topicsFound: serpAnalysis.commonTopics,
+                contentGaps: serpAnalysis.contentGaps,
+                targetWordCount: serpAnalysis.targetWordCount,
+                avgCompetitorWordCount: serpAnalysis.avgWordCount
+            }
+        };
+    }
+    catch (error) {
+        console.error(`❌ [OpenRouter] Error:`, error.message);
+        return { success: false, error: error.message };
+    }
+}
+/**
+ * Apply performance optimizations to HTML before deployment
+ * Adds preconnect hints, lazy loading, and other PageSpeed improvements
+ */
+function optimizeHtmlForPerformance(html) {
+    let optimized = html;
+    // 1. Add preconnect hints for common CDNs (insert after <head>)
+    const preconnectHints = `
+    <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://www.youtube.com" crossorigin>
+    <link rel="preconnect" href="https://i.ytimg.com" crossorigin>
+    <link rel="dns-prefetch" href="https://www.googletagmanager.com">
+  `;
+    if (!optimized.includes('rel="preconnect"')) {
+        optimized = optimized.replace(/<head>/i, `<head>${preconnectHints}`);
+    }
+    // 2. Add loading="lazy" to images that don't have it
+    optimized = optimized.replace(/<img(?![^>]*loading=)/gi, '<img loading="lazy" ');
+    // 3. Add decoding="async" to images
+    optimized = optimized.replace(/<img(?![^>]*decoding=)/gi, '<img decoding="async" ');
+    // 4. Convert YouTube embeds to lite-youtube facade for massive performance boost
+    const youtubeRegex = /<iframe[^>]*src="https?:\/\/(?:www\.)?youtube\.com\/embed\/([^"?]+)[^"]*"[^>]*><\/iframe>/gi;
+    optimized = optimized.replace(youtubeRegex, (match, videoId) => {
+        return `<lite-youtube videoid="${videoId}" style="background-image: url('https://i.ytimg.com/vi/${videoId}/hqdefault.jpg');"></lite-youtube>
+    <script>if(!window.liteYT){window.liteYT=1;document.head.insertAdjacentHTML('beforeend','<style>lite-youtube{display:block;position:relative;width:100%;padding-bottom:56.25%;background-size:cover;background-position:center;cursor:pointer}lite-youtube::before{content:"";position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:68px;height:48px;background:url("data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 68 48\\'%3E%3Cpath fill=\\'%23f00\\' d=\\'M66.52 7.74c-.78-2.93-2.49-5.41-5.42-6.19C55.79.13 34 0 34 0S12.21.13 6.9 1.55c-2.93.78-4.63 3.26-5.42 6.19C.06 13.05 0 24 0 24s.06 10.95 1.48 16.26c.78 2.93 2.49 5.41 5.42 6.19C12.21 47.87 34 48 34 48s21.79-.13 27.1-1.55c2.93-.78 4.64-3.26 5.42-6.19C67.94 34.95 68 24 68 24s-.06-10.95-1.48-16.26z\\'/%3E%3Cpath fill=\\'%23fff\\' d=\\'M45 24L27 14v20z\\'/%3E%3C/svg%3E") center/contain no-repeat}lite-youtube:hover::before{filter:brightness(1.1)}</style>');document.addEventListener('click',e=>{const t=e.target.closest('lite-youtube');if(t){const v=t.getAttribute('videoid');t.outerHTML='<iframe src="https://www.youtube.com/embed/'+v+'?autoplay=1" frameborder="0" allow="autoplay;encrypted-media" allowfullscreen style="position:absolute;top:0;left:0;width:100%;height:100%"></iframe>'}})}</script>`;
+    });
+    // 5. Defer non-critical scripts
+    optimized = optimized.replace(/<script(?![^>]*(?:defer|async|type="application\/ld\+json"))/gi, '<script defer ');
+    // 6. Add fetchpriority="high" to hero images (first image)
+    let firstImageReplaced = false;
+    optimized = optimized.replace(/<img/i, (match) => {
+        if (!firstImageReplaced) {
+            firstImageReplaced = true;
+            return '<img fetchpriority="high" ';
+        }
+        return match;
+    });
+    console.log(`[Perf] Applied HTML optimizations (preconnect, lazy load, YouTube facade, defer scripts)`);
+    return optimized;
+}
+/**
+ * Deploy article HTML to Cloudflare KV
+ * @param slug - Article slug (e.g., "best-cat-dna-tests")
+ * @param html - Article HTML content
+ * @param category - Category slug (e.g., "cat-dna-testing" or "petinsurance"). Defaults to "petinsurance" for V1 compatibility.
+ */
+async function deployToCloudflareKV(slug, html, category = 'petinsurance') {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken) {
+        return { success: false, error: 'Cloudflare API token not configured' };
+    }
+    // Apply performance optimizations before deploying
+    const optimizedHtml = optimizeHtmlForPerformance(html);
+    try {
+        // Use category:slug format for KV key (Worker expects this format for routing)
+        const kvKey = `${category}:${slug}`;
+        const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(kvKey)}`;
+        const response = await fetch(url, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${cfApiToken}`,
+                'Content-Type': 'text/html'
+            },
+            body: optimizedHtml
+        });
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('Cloudflare KV Error:', errorText);
+            return { success: false, error: `KV deployment failed: ${response.status}` };
+        }
+        console.log(`☁️ Deployed to Cloudflare KV: ${kvKey}`);
+        // Automatically update sitemap with new article
+        await updateSitemapWithArticle(slug, category);
+        // Notify Google Search Console of new article
+        const articleUrl = `https://catsluvus.com/${category}/${slug}`;
+        notifyGoogleOfNewArticle(articleUrl).then(() => {
+            addActivityLog('success', `🔔 GSC: Indexing requested`, { keyword: slug, url: articleUrl });
+        }).catch(err => {
+            console.log(`[GSC] Background notification failed: ${err.message}`);
+            addActivityLog('info', `⚠️ GSC: ${err.message}`, { keyword: slug });
+        });
+        // V3: Track article for autonomous indexing verification
+        ensureIndexTrackerInitialized().then(() => (0, indexing_tracker_1.trackNewArticle)(articleUrl, slug, category)).then(() => {
+            addActivityLog('info', `📊 Index tracking started`, { keyword: slug, url: articleUrl });
+        }).catch(err => {
+            console.log(`[IndexTracker] Failed to track: ${err.message}`);
+        });
+        // Validate rich results using URL Inspection API (run in background)
+        validateArticleRichResults(articleUrl).then(result => {
+            const richResultsTestUrl = `https://search.google.com/test/rich-results?url=${encodeURIComponent(articleUrl)}`;
+            if (result.valid) {
+                const types = result.detectedTypes.join(', ');
+                addActivityLog('success', `🎯 Rich Results: Valid (${types})`, { keyword: slug, url: articleUrl, richResultsUrl: richResultsTestUrl });
+            }
+            else if (result.errors.length > 0) {
+                addActivityLog('error', `❌ Rich Results: ${result.errors.length} errors - ${result.errors[0]}`, { keyword: slug, url: articleUrl, richResultsUrl: richResultsTestUrl });
+            }
+            else if (result.warnings.length > 0) {
+                addActivityLog('info', `⚠️ Rich Results: ${result.warnings.length} warnings`, { keyword: slug, url: articleUrl, richResultsUrl: richResultsTestUrl });
+            }
+        }).catch(err => {
+            console.log(`[Rich Results] Background validation failed: ${err.message}`);
+        });
+        return { success: true };
+    }
+    catch (error) {
+        console.error('Cloudflare deployment error:', error);
+        return { success: false, error: error.message };
+    }
+}
+/**
+ * Save research phase output and CategoryContext to KV for persistence
+ */
+async function saveResearchToKV(researchOutput, categoryContext) {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken) {
+        return { success: false, error: 'Cloudflare API token not configured' };
+    }
+    try {
+        const kvPrefix = categoryContext?.kvPrefix || 'research:';
+        const researchKey = `${kvPrefix}research-output`;
+        const contextKey = `${kvPrefix}category-context`;
+        const researchUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(researchKey)}`;
+        await fetch(researchUrl, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${cfApiToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(researchOutput)
+        });
+        if (categoryContext) {
+            const contextUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(contextKey)}`;
+            await fetch(contextUrl, {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `Bearer ${cfApiToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(categoryContext)
+            });
+        }
+        console.log(`☁️ Research saved to KV: ${researchKey}`);
+        return { success: true };
+    }
+    catch (error) {
+        console.error('Failed to save research to KV:', error);
+        return { success: false, error: error.message };
+    }
+}
+/**
+ * Load research phase output and CategoryContext from KV
+ */
+async function loadResearchFromKV(kvPrefix) {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken) {
+        return { researchOutput: null, categoryContext: null };
+    }
+    try {
+        const researchKey = `${kvPrefix}research-output`;
+        const contextKey = `${kvPrefix}category-context`;
+        const researchUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(researchKey)}`;
+        const contextUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(contextKey)}`;
+        const [researchRes, contextRes] = await Promise.all([
+            fetch(researchUrl, { headers: { 'Authorization': `Bearer ${cfApiToken}` } }),
+            fetch(contextUrl, { headers: { 'Authorization': `Bearer ${cfApiToken}` } })
+        ]);
+        let researchOutput = null;
+        let categoryContext = null;
+        if (researchRes.ok) {
+            researchOutput = await researchRes.json();
+        }
+        if (contextRes.ok) {
+            categoryContext = await contextRes.json();
+        }
+        return { researchOutput, categoryContext };
+    }
+    catch (error) {
+        console.error('Failed to load research from KV:', error);
+        return { researchOutput: null, categoryContext: null };
+    }
+}
+/**
+ * Fetch current sitemap from public URL (the worker serves it)
+ * @param categorySlug - Category slug for dynamic sitemap URL (defaults to current context)
+ */
+async function fetchCurrentSitemap(categorySlug) {
+    try {
+        // Use category from context or parameter for dynamic sitemap URL
+        const category = categorySlug || v3CategoryContext?.categorySlug || 'petinsurance';
+        const sitemapUrl = `https://catsluvus.com/${category}/sitemap.xml`;
+        const response = await fetch(sitemapUrl, {
+            headers: {
+                'User-Agent': 'SitemapUpdater/1.0'
+            }
+        });
+        if (!response.ok) {
+            console.log('Could not fetch existing sitemap from public URL');
+            return null;
+        }
+        const sitemap = await response.text();
+        // Verify it's valid XML
+        if (!sitemap.includes('<?xml') || !sitemap.includes('<urlset')) {
+            console.log('Invalid sitemap format received');
+            return null;
+        }
+        return sitemap;
+    }
+    catch (error) {
+        console.error('Error fetching sitemap:', error);
+        return null;
+    }
+}
+/**
+ * Update sitemap with a new article URL
+ * @param slug - Article slug
+ * @param category - Category slug (e.g., "cat-dna-testing" or "petinsurance"). Defaults to "petinsurance".
+ */
+async function updateSitemapWithArticle(slug, category = 'petinsurance') {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken) {
+        console.error('Cannot update sitemap: No Cloudflare API token');
+        return false;
+    }
+    try {
+        // Invalidate the cached sitemap for this category so the Worker regenerates it
+        // dynamically from KV keys on the next request (the article KV key already exists)
+        const cacheKey = `sitemap:${category}`;
+        const deleteUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(cacheKey)}`;
+        await fetch(deleteUrl, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${cfApiToken}` }
+        });
+        console.log(`🗺️ Sitemap cache invalidated for ${category} (new article: ${slug})`);
+        addActivityLog('success', `🗺️ Sitemap: Cache invalidated for ${category}`, { keyword: slug, url: `https://catsluvus.com/${category}/${slug}` });
+        // Purge Cloudflare CDN cache for the sitemap URL
+        await purgeSitemapCache(cfApiToken, category);
+        return true;
+    }
+    catch (error) {
+        console.error('Error invalidating sitemap cache:', error);
+        return false;
+    }
+}
+/**
+ * Purge Cloudflare cache for the sitemap URL
+ * Supports both Global API Key (full access) and API Token authentication
+ * @param cfApiToken - Cloudflare API token
+ * @param categorySlug - Category slug for dynamic sitemap URL (defaults to current context)
+ */
+async function purgeSitemapCache(cfApiToken, categorySlug) {
+    try {
+        const purgeUrl = `https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/purge_cache`;
+        // Check for Global API Key (has full permissions including cache purge)
+        const globalApiKey = doppler_secrets_1.secrets.get('CLOUDFLARE_GLOBAL_API_KEY') || process.env.CLOUDFLARE_GLOBAL_API_KEY;
+        const accountEmail = 'Webmaster@techfundoffice.com';
+        // Build headers based on available credentials
+        const headers = {
+            'Content-Type': 'application/json'
+        };
+        if (globalApiKey) {
+            // Use Global API Key authentication (full access)
+            headers['X-Auth-Email'] = accountEmail;
+            headers['X-Auth-Key'] = globalApiKey;
+        }
+        else {
+            // Fall back to API Token (may not have cache purge permission)
+            headers['Authorization'] = `Bearer ${cfApiToken}`;
+        }
+        // Use dynamic category for sitemap URL
+        const category = categorySlug || v3CategoryContext?.categorySlug || 'petinsurance';
+        const response = await fetch(purgeUrl, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                files: [
+                    `https://catsluvus.com/${category}/sitemap.xml`,
+                    `https://www.catsluvus.com/${category}/sitemap.xml`
+                ]
+            })
+        });
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            if (errorData.errors?.[0]?.code === 10000) {
+                console.warn('⚠️ Cache purge skipped: API token lacks cache purge permission.');
+                console.warn('   Add CLOUDFLARE_GLOBAL_API_KEY to Doppler for instant cache purge.');
+                console.warn('   Sitemap will update within 1 hour via normal cache expiry.');
+                return false;
+            }
+            console.error('Cache purge error:', JSON.stringify(errorData));
+            return false;
+        }
+        console.log('🧹 Sitemap cache purged - changes visible immediately');
+        return true;
+    }
+    catch (error) {
+        console.error('Error purging cache:', error);
+        return false;
+    }
+}
+// In-memory storage for recent articles (in production, use database)
+let recentArticles = [];
+let activityLog = [];
+let activityLogId = 0;
+function addActivityLog(type, message, details) {
+    const entry = {
+        id: ++activityLogId,
+        timestamp: new Date().toISOString(),
+        type,
+        message,
+        details
+    };
+    activityLog.unshift(entry);
+    // Keep only last 200 entries
+    if (activityLog.length > 200) {
+        activityLog = activityLog.slice(0, 200);
+    }
+    console.log(`[SEO-GEN] ${type.toUpperCase()}: ${message}`, details || '');
+}
+// Stats tracking (uses actual keyword count)
+let stats = {
+    totalKeywords: seo_data_1.ALL_KEYWORDS.length,
+    generated: 0,
+    pending: seo_data_1.ALL_KEYWORDS.length,
+    percentComplete: '0.0'
+};
+let sessionHealth = {
+    sessionStartTime: null, articlesGenerated: 0, articlesFailed: 0,
+    articlesDeployed: 0, totalSeoScore: 0, seoScoreCount: 0,
+    currentKeyword: null, currentStage: null, currentStageStartTime: null,
+    lastArticleTime: null, avgGenerationMs: 0, generationTimes: [],
+    consecutiveErrors: 0, lastError: null
+};
+function resetSessionHealth() {
+    sessionHealth = {
+        sessionStartTime: Date.now(), articlesGenerated: 0, articlesFailed: 0,
+        articlesDeployed: 0, totalSeoScore: 0, seoScoreCount: 0,
+        currentKeyword: null, currentStage: null, currentStageStartTime: null,
+        lastArticleTime: null, avgGenerationMs: 0, generationTimes: [],
+        consecutiveErrors: 0, lastError: null
+    };
+}
+function updateSessionStage(keyword, stage) {
+    sessionHealth.currentKeyword = keyword;
+    sessionHealth.currentStage = stage;
+    sessionHealth.currentStageStartTime = Date.now();
+}
+function recordSessionSuccess(deployed, durationMs) {
+    sessionHealth.articlesGenerated++;
+    if (deployed)
+        sessionHealth.articlesDeployed++;
+    sessionHealth.lastArticleTime = Date.now();
+    sessionHealth.consecutiveErrors = 0;
+    sessionHealth.currentKeyword = null;
+    sessionHealth.currentStage = null;
+    sessionHealth.currentStageStartTime = null;
+    // Rolling average of last 20 generation times
+    sessionHealth.generationTimes.push(durationMs);
+    if (sessionHealth.generationTimes.length > 20)
+        sessionHealth.generationTimes.shift();
+    sessionHealth.avgGenerationMs = Math.round(sessionHealth.generationTimes.reduce((a, b) => a + b, 0) / sessionHealth.generationTimes.length);
+}
+function recordSessionError(message) {
+    sessionHealth.articlesFailed++;
+    sessionHealth.consecutiveErrors++;
+    sessionHealth.lastError = message;
+    sessionHealth.currentKeyword = null;
+    sessionHealth.currentStage = null;
+    sessionHealth.currentStageStartTime = null;
+}
+/**
+ * Get generator status
+ */
+router.get('/status', async (_req, res) => {
+    try {
+        res.json({
+            totalKeywords: stats.totalKeywords,
+            pagesComplete: stats.generated,
+            pagesNeeded: stats.pending,
+            percentComplete: stats.percentComplete,
+            lastUpdated: new Date().toISOString(),
+            version: 'v3',
+            skillsEnabled: true
+        });
+    }
+    catch (error) {
+        res.status(500).json({
+            error: error.message || 'Failed to get status'
+        });
+    }
+});
+// ============================================================================
+// V3: SKILL-BASED ENDPOINTS
+// ============================================================================
+/**
+ * V3: Validate article content with skill-based rules
+ */
+/**
+ * Generate Product schema from comparison table
+ * Helps Google display rich product results in search
+ * Uses Amazon affiliate links for product URLs
+ */
+function generateProductSchema(comparisonHeaders, comparisonRows, externalLinks, keyword) {
+    if (!comparisonRows || comparisonRows.length === 0) {
+        return null;
+    }
+    const amazonTag = process.env.AMAZON_AFFILIATE_TAG || 'catsluvus03-20';
+    const products = comparisonRows.map((row, index) => {
+        // Normalize row to array (AI sometimes returns strings or objects)
+        const rowArray = Array.isArray(row) ? row : (typeof row === 'string' ? [row] : Object.values(row || {}));
+        if (!rowArray.length)
+            return null;
+        const productName = rowArray[0] || 'Unknown Product'; // First column is product name
+        const priceStr = rowArray[1] || '$0'; // Second column is price
+        // Extract numeric price (remove $, commas, handle ranges by taking first number)
+        const priceMatch = String(priceStr).match(/\$?(\d+)/);
+        const priceValue = priceMatch ? priceMatch[1] : '0';
+        // Check if last column contains Amazon search query
+        const lastCol = rowArray[rowArray.length - 1] || '';
+        const isAmazonSearch = String(lastCol).includes('+') || comparisonHeaders[comparisonHeaders.length - 1]?.toLowerCase().includes('amazon');
+        // Build Amazon affiliate URL
+        const searchQuery = isAmazonSearch
+            ? String(lastCol).replace(/\+/g, ' ')
+            : productName;
+        const amazonUrl = `https://www.amazon.com/s?k=${encodeURIComponent(searchQuery)}&tag=${amazonTag}`;
+        // Build description from middle columns (skip first=name, last=amazon search)
+        const featureColumns = isAmazonSearch ? rowArray.slice(2, -1) : rowArray.slice(2);
+        const featureHeaders = isAmazonSearch ? comparisonHeaders.slice(2, -1) : comparisonHeaders.slice(2);
+        const features = featureColumns.map((val, i) => `${featureHeaders[i] || 'Feature'}: ${val}`).join(', ');
+        const description = features ? `${productName} - ${features}` : productName;
+        return {
+            "@type": "ListItem",
+            "position": index + 1,
+            "item": {
+                "@type": "Product",
+                "name": productName,
+                "description": description,
+                "offers": {
+                    "@type": "Offer",
+                    "price": priceValue,
+                    "priceCurrency": "USD",
+                    "availability": "https://schema.org/InStock",
+                    "url": amazonUrl
+                }
+            }
+        };
+    });
+    // Filter out null products (from invalid rows)
+    const validProducts = products.filter(p => p !== null);
+    return {
+        "@context": "https://schema.org",
+        "@type": "ItemList",
+        "name": `Best ${keyword} Comparison`,
+        "description": `Comparison of top ${keyword} products`,
+        "itemListElement": validProducts
+    };
+}
+router.post('/validate', async (req, res) => {
+    try {
+        const { html, keyword, profile = 'comprehensive' } = req.body;
+        if (!html || !keyword) {
+            return res.status(400).json({ error: 'Missing required fields: html, keyword' });
+        }
+        const engine = skill_engine_1.SkillEngine.fromProfile(profile);
+        const validation = engine.validateContent(html, keyword);
+        const recommendation = (0, seo_skills_1.getDeploymentRecommendation)(validation.score);
+        res.json({
+            success: true,
+            validation,
+            recommendation,
+            loadedSkills: engine.getLoadedSkills(),
+            profile
+        });
+    }
+    catch (error) {
+        console.error('[V3 Validate] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * V3: Comprehensive audit of article content
+ */
+router.post('/audit', async (req, res) => {
+    try {
+        const { html, keyword, profile = 'comprehensive' } = req.body;
+        if (!html || !keyword) {
+            return res.status(400).json({ error: 'Missing required fields: html, keyword' });
+        }
+        const engine = skill_engine_1.SkillEngine.fromProfile(profile);
+        const audit = engine.auditContent(html, keyword);
+        const recommendation = (0, seo_skills_1.getDeploymentRecommendation)(audit.overallScore);
+        res.json({
+            success: true,
+            audit,
+            recommendation,
+            loadedSkills: engine.getLoadedSkills(),
+            qualityGates: seo_skills_1.QUALITY_GATES,
+            profile
+        });
+    }
+    catch (error) {
+        console.error('[V3 Audit] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * V3: Get available skill profiles
+ */
+router.get('/skills/profiles', async (_req, res) => {
+    try {
+        const { SEO_SKILL_PROFILES, QUALITY_GATES } = await Promise.resolve().then(() => __importStar(require('../config/seo-skills')));
+        // Return profiles as object with profile IDs as keys (for easy lookup)
+        res.json({
+            profiles: SEO_SKILL_PROFILES,
+            qualityGates: QUALITY_GATES
+        });
+    }
+    catch (error) {
+        console.error('[V3 Skills] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * V3: Get best practices for a profile (for prompt enhancement)
+ */
+router.get('/skills/best-practices', async (req, res) => {
+    try {
+        const profile = req.query.profile || 'comprehensive';
+        const engine = skill_engine_1.SkillEngine.fromProfile(profile);
+        const bestPractices = engine.getBestPracticesForPrompt();
+        res.json({
+            success: true,
+            profile,
+            loadedSkills: engine.getLoadedSkills(),
+            bestPractices,
+            skillCount: engine.getLoadedSkills().length
+        });
+    }
+    catch (error) {
+        console.error('[V3 Best Practices] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+// Simple in-memory cache for SERP analysis (expires after 1 hour)
+const serpCache = new Map();
+const SERP_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+/**
+ * Analyze Google SERP for a keyword to understand what's ranking
+ * Includes caching to avoid repeated API calls
+ */
+async function analyzeSERP(keyword) {
+    // Check cache first
+    const cacheKey = keyword.toLowerCase().trim();
+    const cached = serpCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < SERP_CACHE_TTL) {
+        console.log(`📦 [SERP Cache] Using cached analysis for: "${keyword}"`);
+        return cached.data;
+    }
+    try {
+        // SERP API priority: Serper (2500 free/month) > Google CSE (100/day) > Outscraper > DuckDuckGo
+        const serperKey = process.env.SERPER_API_KEY;
+        const googleApiKey = process.env.GOOGLE_API_KEY;
+        const googleCseId = process.env.GOOGLE_CSE_ID;
+        const outscraperKey = process.env.OUTSCRAPER_API_KEY;
+        let results = [];
+        // Try Serper first (best free tier: 2500 queries/month)
+        if (serperKey) {
+            console.log('🔍 [SERP] Using Serper.dev API');
+            try {
+                const serperResponse = await fetch('https://google.serper.dev/search', {
+                    method: 'POST',
+                    headers: {
+                        'X-API-KEY': serperKey,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        q: keyword,
+                        gl: 'us',
+                        hl: 'en',
+                        num: 10
+                    })
+                });
+                if (serperResponse.ok) {
+                    const serperData = await serperResponse.json();
+                    results = (serperData?.organic || []).map((item) => ({
+                        title: item.title || '',
+                        description: item.snippet || '',
+                        link: item.link || ''
+                    }));
+                    console.log(`✅ [SERP] Serper returned ${results.length} results`);
+                }
+                else {
+                    console.log(`⚠️ [SERP] Serper failed (${serperResponse.status}), trying fallback...`);
+                }
+            }
+            catch (serperErr) {
+                console.log(`⚠️ [SERP] Serper error: ${serperErr.message}`);
+            }
+        }
+        // Fallback to Google CSE
+        if (results.length === 0 && googleApiKey && googleCseId) {
+            console.log('🔍 [SERP] Using Google Custom Search API');
+            const googleResponse = await fetch(`https://www.googleapis.com/customsearch/v1?` + new URLSearchParams({
+                key: googleApiKey,
+                cx: googleCseId,
+                q: keyword,
+                num: '10',
+                gl: 'us',
+                hl: 'en'
+            }));
+            if (googleResponse.ok) {
+                const googleData = await googleResponse.json();
+                results = (googleData?.items || []).map((item) => ({
+                    title: item.title || '',
+                    description: item.snippet || '',
+                    link: item.link || ''
+                }));
+                console.log(`✅ [SERP] Google CSE returned ${results.length} results`);
+            }
+            else {
+                console.log(`⚠️ [SERP] Google CSE failed (${googleResponse.status}), trying fallback...`);
+            }
+        }
+        // Fallback to Outscraper
+        if (results.length === 0 && outscraperKey) {
+            console.log('🔍 [SERP] Falling back to Outscraper API');
+            const response = await fetch('https://api.app.outscraper.com/google-search-v3?' + new URLSearchParams({
+                query: keyword,
+                language: 'en',
+                region: 'US',
+                limit: '10'
+            }), {
+                headers: {
+                    'X-API-KEY': outscraperKey
+                }
+            });
+            if (response.ok) {
+                const data = await response.json();
+                results = (data?.data?.[0]?.organic_results || []).map((r) => ({
+                    title: r.title || '',
+                    description: r.description || '',
+                    link: r.link || ''
+                }));
+            }
+        }
+        // Fallback to DuckDuckGo Instant Answer API (FREE, no API key required)
+        if (results.length === 0) {
+            console.log('🦆 [SERP] Trying DuckDuckGo (free, no API key)...');
+            try {
+                const ddgResponse = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(keyword)}&format=json&no_html=1&skip_disambig=1`);
+                if (ddgResponse.ok) {
+                    const ddgData = await ddgResponse.json();
+                    const relatedTopics = ddgData?.RelatedTopics || [];
+                    results = relatedTopics
+                        .filter((t) => t.Text && t.FirstURL)
+                        .slice(0, 10)
+                        .map((t) => ({
+                        title: t.Text?.split(' - ')[0] || t.Text?.substring(0, 60) || '',
+                        description: t.Text || '',
+                        link: t.FirstURL || ''
+                    }));
+                    if (results.length > 0) {
+                        console.log(`✅ [SERP] DuckDuckGo returned ${results.length} related topics`);
+                    }
+                }
+            }
+            catch (ddgError) {
+                console.log(`⚠️ [SERP] DuckDuckGo failed: ${ddgError.message}`);
+            }
+        }
+        // If all APIs failed, use defaults
+        if (results.length === 0) {
+            console.log('⚠️ No SERP API available - using default analysis');
+            return getDefaultSERPAnalysis(keyword);
+        }
+        const topResults = results.slice(0, 10).map((r) => ({
+            title: r.title || '',
+            description: r.description || '',
+            url: r.link || r.url || ''
+        }));
+        // Analyze patterns from top results
+        const titles = topResults.map((r) => r.title);
+        const avgTitleLength = titles.length > 0 ? titles.reduce((sum, t) => sum + t.length, 0) / titles.length : 55;
+        // Extract common topics from titles and descriptions
+        const allText = topResults.map((r) => `${r.title} ${r.description}`).join(' ').toLowerCase();
+        const commonTopics = extractTopics(allText, keyword);
+        // Identify content gaps - topics competitors might be missing
+        const contentGaps = identifyContentGaps(keyword, commonTopics);
+        // Scrape competitor pages for headings, FAQs, and word counts
+        const competitorUrls = topResults.map((r) => r.url).filter((u) => u);
+        const competitorAnalysis = await analyzeCompetitorPages(competitorUrls);
+        // Target word count: beat competitors by 20%
+        const targetWordCount = Math.max(3500, Math.round(competitorAnalysis.avgWordCount * 1.2));
+        console.log(`🔍 SERP Analysis: ${topResults.length} competitors, avg title ${Math.round(avgTitleLength)} chars`);
+        console.log(`📊 Topics: ${commonTopics.slice(0, 5).join(', ')}`);
+        console.log(`📑 Competitor headings: ${competitorAnalysis.allHeadings.length} found - ${competitorAnalysis.allHeadings.slice(0, 5).join(' | ')}`);
+        console.log(`❓ Competitor FAQs: ${competitorAnalysis.allFAQs.length} found - ${competitorAnalysis.allFAQs.slice(0, 3).join(' | ')}`);
+        console.log(`🎯 Gaps to exploit: ${contentGaps.slice(0, 3).join(', ')}`);
+        console.log(`📝 Target word count: ${targetWordCount} (competitors avg: ${competitorAnalysis.avgWordCount})`);
+        // Telemetry: Log extraction quality
+        const extractionQuality = {
+            headingsFound: competitorAnalysis.allHeadings.length,
+            faqsFound: competitorAnalysis.allFAQs.length,
+            entitiesFound: competitorAnalysis.allEntities.length,
+            pagesScraped: competitorUrls.length,
+            avgWordCount: competitorAnalysis.avgWordCount
+        };
+        console.log(`📈 [SERP Telemetry] Extraction quality:`, JSON.stringify(extractionQuality));
+        const result = {
+            topResults,
+            avgTitleLength,
+            commonTopics,
+            contentGaps,
+            targetWordCount,
+            competitorHeadings: competitorAnalysis.allHeadings,
+            competitorFAQs: competitorAnalysis.allFAQs,
+            competitorEntities: competitorAnalysis.allEntities,
+            avgWordCount: competitorAnalysis.avgWordCount
+        };
+        // Cache the result
+        serpCache.set(cacheKey, { data: result, timestamp: Date.now() });
+        console.log(`💾 [SERP Cache] Cached analysis for: "${keyword}"`);
+        return result;
+    }
+    catch (error) {
+        console.log('⚠️ SERP analysis error:', error.message);
+        return getDefaultSERPAnalysis(keyword);
+    }
+}
+function getDefaultSERPAnalysis(keyword) {
+    return {
+        topResults: [],
+        avgTitleLength: 55,
+        commonTopics: ['cost', 'coverage', 'best providers', 'comparison', 'reviews', 'deductible', 'claims'],
+        contentGaps: ['real claim payout data', 'veterinarian expert quotes', 'breed-specific pricing', 'state-by-state cost comparison', 'hidden exclusions exposed'],
+        targetWordCount: 3500,
+        competitorHeadings: [],
+        competitorFAQs: [],
+        competitorEntities: ['Lemonade', 'Healthy Paws', 'Trupanion', 'ASPCA', 'deductible', 'reimbursement', 'waiting period'],
+        avgWordCount: 2500
+    };
+}
+/**
+ * Scrape a competitor page to extract H2/H3 headings, FAQs, entities, and word count
+ * Uses cheerio for reliable DOM parsing
+ */
+async function scrapeCompetitorPage(url) {
+    try {
+        // Skip non-article URLs (PDFs, images, etc.)
+        if (url.match(/\.(pdf|jpg|png|gif|mp4)$/i)) {
+            return { headings: [], faqs: [], entities: [], wordCount: 0 };
+        }
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout per page
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml'
+            },
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (!response.ok) {
+            return { headings: [], faqs: [], entities: [], wordCount: 0 };
+        }
+        const html = await response.text();
+        const $ = cheerio.load(html);
+        // Extract H2 and H3 headings using DOM
+        const headings = [];
+        $('h2, h3').each((_, el) => {
+            const text = $(el).text().trim();
+            if (text.length > 3 && text.length < 100) {
+                headings.push(text);
+            }
+        });
+        // Extract FAQ questions from multiple sources
+        const faqs = [];
+        // 1. Questions in any heading (h1-h6)
+        $('h1, h2, h3, h4, h5, h6').each((_, el) => {
+            const text = $(el).text().trim();
+            if (text.includes('?') && text.length > 10 && text.length < 200) {
+                if (!faqs.includes(text))
+                    faqs.push(text);
+            }
+        });
+        // 2. JSON-LD FAQ Schema
+        $('script[type="application/ld+json"]').each((_, el) => {
+            try {
+                const json = JSON.parse($(el).html() || '');
+                const extractFAQs = (obj) => {
+                    if (obj['@type'] === 'Question' && obj.name) {
+                        if (!faqs.includes(obj.name))
+                            faqs.push(obj.name);
+                    }
+                    if (obj['@type'] === 'FAQPage' && obj.mainEntity) {
+                        (Array.isArray(obj.mainEntity) ? obj.mainEntity : [obj.mainEntity]).forEach((q) => {
+                            if (q.name && !faqs.includes(q.name))
+                                faqs.push(q.name);
+                        });
+                    }
+                    if (obj['@graph'])
+                        obj['@graph'].forEach(extractFAQs);
+                };
+                extractFAQs(json);
+            }
+            catch (e) { /* ignore parse errors */ }
+        });
+        // 3. FAQ elements by class/id
+        $('[class*="faq"], [id*="faq"], [class*="question"], [id*="question"]').each((_, el) => {
+            const text = $(el).text().trim();
+            if (text.includes('?') && text.length > 10 && text.length < 200) {
+                if (!faqs.includes(text))
+                    faqs.push(text);
+            }
+        });
+        // Extract key entities (brand names, insurance providers)
+        const entities = [];
+        const entityPatterns = [
+            'Lemonade', 'Healthy Paws', 'Trupanion', 'ASPCA', 'Embrace', 'Nationwide',
+            'Pets Best', 'Figo', 'MetLife', 'Spot', 'Pumpkin', 'Fetch', 'ManyPets',
+            'Pawlicy', 'veterinarian', 'deductible', 'premium', 'reimbursement',
+            'waiting period', 'pre-existing', 'hereditary', 'wellness'
+        ];
+        const bodyText = $('body').text().toLowerCase();
+        entityPatterns.forEach(entity => {
+            if (bodyText.includes(entity.toLowerCase())) {
+                entities.push(entity);
+            }
+        });
+        // Estimate word count from main content
+        const mainContent = $('article, main, .content, .post, [role="main"]').first();
+        const contentText = mainContent.length ? mainContent.text() : $('body').text();
+        const wordCount = contentText.split(/\s+/).filter(w => w.length > 2).length;
+        return {
+            headings: headings.slice(0, 15),
+            faqs: faqs.slice(0, 10),
+            entities: entities.slice(0, 15),
+            wordCount
+        };
+    }
+    catch (error) {
+        // Silently fail for individual pages - don't block the whole analysis
+        return { headings: [], faqs: [], entities: [], wordCount: 0 };
+    }
+}
+/**
+ * Analyze multiple competitor pages in parallel (with limit)
+ */
+async function analyzeCompetitorPages(urls) {
+    // Limit to top 5 pages to avoid timeout
+    const topUrls = urls.slice(0, 5);
+    console.log(`📄 Scraping ${topUrls.length} competitor pages for headings/FAQs/entities...`);
+    const results = await Promise.all(topUrls.map(url => scrapeCompetitorPage(url)));
+    // Aggregate results
+    const allHeadings = new Set();
+    const allFAQs = new Set();
+    const allEntities = new Set();
+    const wordCounts = [];
+    results.forEach(r => {
+        r.headings.forEach(h => allHeadings.add(h));
+        r.faqs.forEach(f => allFAQs.add(f));
+        r.entities.forEach(e => allEntities.add(e));
+        if (r.wordCount > 500)
+            wordCounts.push(r.wordCount); // Only count substantial pages
+    });
+    const avgWordCount = wordCounts.length > 0
+        ? Math.round(wordCounts.reduce((a, b) => a + b, 0) / wordCounts.length)
+        : 2500;
+    console.log(`📊 Found ${allHeadings.size} headings, ${allFAQs.size} FAQs, ${allEntities.size} entities, avg ${avgWordCount} words`);
+    return {
+        allHeadings: Array.from(allHeadings),
+        allFAQs: Array.from(allFAQs),
+        allEntities: Array.from(allEntities),
+        avgWordCount
+    };
+}
+function extractTopics(text, keyword) {
+    const topics = new Set();
+    const patterns = [
+        'cost', 'price', 'cheap', 'affordable', 'expensive', 'worth it',
+        'best', 'top', 'review', 'comparison', 'vs', 'rated',
+        'coverage', 'deductible', 'premium', 'reimbursement', 'payout',
+        'breed', 'puppy', 'kitten', 'senior', 'young', 'age',
+        'accident', 'illness', 'wellness', 'preventive', 'routine',
+        'claim', 'wait', 'exclude', 'pre-existing', 'hereditary',
+        'lemonade', 'healthy paws', 'trupanion', 'embrace', 'nationwide', 'pets best'
+    ];
+    patterns.forEach(p => {
+        if (text.includes(p))
+            topics.add(p);
+    });
+    return Array.from(topics);
+}
+function identifyContentGaps(keyword, existingTopics) {
+    const allPossibleTopics = [
+        'actual customer claim amounts with real dollar figures',
+        'veterinarian expert recommendations and quotes',
+        'breed-specific pricing data tables',
+        'state-by-state cost comparison data',
+        'hidden exclusions and gotchas to avoid',
+        'claim denial rate statistics by provider',
+        'step-by-step claim filing walkthrough',
+        'multi-pet discount calculator',
+        'annual vs per-incident deductible math examples',
+        'real customer testimonials with specific outcomes',
+        'emergency vet cost breakdown by procedure',
+        'waiting period comparison chart',
+        'pre-existing condition workarounds'
+    ];
+    // Return topics not well covered by competitors
+    return allPossibleTopics.filter(t => !existingTopics.some(et => t.toLowerCase().includes(et))).slice(0, 6);
+}
+/**
+ * Test endpoint - verify Copilot CLI connectivity
+ * Uses direct CLI invocation with -p flag (what the SDK wraps internally)
+ */
+router.get('/test-sdk', async (_req, res) => {
+    try {
+        console.log('🧪 [CLI Test] Starting Copilot CLI test...');
+        // Simple prompt without quotes to avoid escaping issues
+        const response = await generateWithCopilotCLI('What is 2 plus 2? Reply with just the number.', 30000 // 30 second timeout
+        );
+        console.log(`🧪 [CLI Test] Response: ${response}`);
+        res.json({
+            success: true,
+            response: response.trim(),
+            message: 'GitHub Copilot CLI is working!'
+        });
+    }
+    catch (error) {
+        console.error('🧪 [CLI Test] Error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            hint: 'Check GitHub Copilot enablement at https://github.com/settings/copilot'
+        });
+    }
+});
+/**
+ * V3: Generate a single article with skill-enhanced pipeline
+ * Integrates skill engine for post-generation auditing and quality gates
+ * Uses Cloudflare AI for content generation
+ */
+router.post('/generate', async (req, res) => {
+    const { keyword, skillProfile = 'comprehensive' } = req.body;
+    if (!keyword || typeof keyword !== 'string') {
+        return res.status(400).json({ error: 'Keyword is required' });
+    }
+    try {
+        console.log(`🤖 V3 Skill-Enhanced generation: ${keyword} (profile: ${skillProfile})`);
+        // V3: Initialize skill engine for post-generation audit
+        const skillEngine = skill_engine_1.SkillEngine.fromProfile(skillProfile);
+        const loadedSkills = skillEngine.getLoadedSkills();
+        console.log(`📚 Loaded ${loadedSkills.length} skills: ${loadedSkills.join(', ')}`);
+        // Log generation start to activity log
+        addActivityLog('generating', `Generating: "${keyword}" (V3 with ${loadedSkills.length} skills)`, { keyword, skillProfile });
+        const result = await generateWithCopilotSDK(keyword);
+        if (!result.success) {
+            // Check if it's a Copilot policy error
+            if (result.error?.includes('No model available') || result.error?.includes('policy enablement')) {
+                return res.status(503).json({
+                    error: 'GitHub Copilot is not enabled',
+                    message: 'Enable Copilot at https://github.com/settings/copilot for account: techfundoffice',
+                    details: result.error
+                });
+            }
+            return res.status(500).json({ error: result.error });
+        }
+        const slug = (0, seo_data_1.keywordToSlug)(keyword);
+        // V3: Run post-generation skill audit
+        let skillAudit = null;
+        let deploymentRecommendation = null;
+        if (result.liveUrl) {
+            try {
+                // Fetch the deployed HTML for auditing
+                const response = await fetch(result.liveUrl);
+                if (response.ok) {
+                    const deployedHtml = await response.text();
+                    skillAudit = skillEngine.auditContent(deployedHtml, keyword);
+                    deploymentRecommendation = (0, seo_skills_1.getDeploymentRecommendation)(skillAudit.overallScore);
+                    console.log(`📊 V3 Skill Audit: ${skillAudit.overallScore}/100 - ${deploymentRecommendation.action}`);
+                }
+            }
+            catch (auditErr) {
+                console.log(`⚠️ Skill audit skipped: ${auditErr.message}`);
+            }
+        }
+        // Update stats
+        stats.generated++;
+        stats.pending = Math.max(0, stats.pending - 1);
+        stats.percentComplete = ((stats.generated / stats.totalKeywords) * 100).toFixed(2);
+        console.log(`✅ V3 Generated: ${slug}`);
+        if (result.deployed) {
+            console.log(`🌐 Live at: ${result.liveUrl}`);
+        }
+        // Store in recent articles with skill audit data
+        recentArticles.unshift({
+            keyword,
+            slug,
+            title: result.article.title,
+            wordCount: result.article.wordCount || 3500,
+            date: new Date().toISOString(),
+            deployed: result.deployed || false,
+            liveUrl: result.liveUrl || null,
+            skillScore: skillAudit?.overallScore,
+            deployAction: deploymentRecommendation?.action
+        });
+        recentArticles = recentArticles.slice(0, 50);
+        // Log to activity log with skill audit info
+        const manualSeoScore = result.seoScore || 0;
+        const skillScore = skillAudit?.overallScore || 0;
+        const scoreDisplay = skillScore > 0
+            ? `| SEO: ${manualSeoScore}/100 | Skills: ${skillScore}/100`
+            : `| SEO: ${manualSeoScore}/100`;
+        addActivityLog('success', `Generated: "${result.article.title}" ${scoreDisplay}`, {
+            keyword,
+            slug,
+            seoScore: manualSeoScore,
+            skillScore,
+            wordCount: result.article.wordCount || 3500,
+            url: result.liveUrl || undefined,
+            deployAction: deploymentRecommendation?.action
+        });
+        if (result.deployed) {
+            addActivityLog('deployed', `Deployed to Cloudflare KV ${deploymentRecommendation ? `(${deploymentRecommendation.action})` : ''}`, {
+                keyword,
+                slug,
+                url: result.liveUrl || `https://catsluvus.com/petinsurance/${slug}`,
+                skillScore
+            });
+        }
+        return res.json({
+            success: true,
+            engine: 'cloudflare-ai-v3',
+            slug,
+            title: result.article.title,
+            wordCount: result.article.wordCount || 3500,
+            seoScore: manualSeoScore,
+            preview: `<h1>${result.article.title}</h1><p>${result.article.introduction?.substring(0, 500)}...</p>`,
+            deployed: result.deployed,
+            liveUrl: result.liveUrl,
+            serpAnalysis: result.serpAnalysis,
+            // V3: Skill audit results
+            skillAudit: skillAudit ? {
+                overallScore: skillAudit.overallScore,
+                categories: skillAudit.categories,
+                issueCount: skillAudit.issues.length,
+                issues: skillAudit.issues.slice(0, 10),
+                recommendations: skillAudit.recommendations.slice(0, 5)
+            } : null,
+            deploymentRecommendation: deploymentRecommendation ? {
+                action: deploymentRecommendation.action,
+                message: deploymentRecommendation.message,
+                qualityGates: seo_skills_1.QUALITY_GATES
+            } : null,
+            skillProfile,
+            skillsLoaded: loadedSkills
+        });
+    }
+    catch (error) {
+        console.error('V3 Generation error:', error);
+        return res.status(500).json({ error: error.message || 'Failed to generate article' });
+    }
+});
+/**
+ * Run batch generation
+ */
+router.post('/batch', async (req, res) => {
+    const { count = 50 } = req.body;
+    try {
+        res.json({
+            success: true,
+            message: `Batch generation started for ${count} articles`,
+            generated: 0,
+            queued: count
+        });
+    }
+    catch (error) {
+        res.status(500).json({
+            error: error.message || 'Batch generation failed'
+        });
+    }
+});
+/**
+ * Get recent articles
+ */
+router.get('/recent', async (_req, res) => {
+    res.json({
+        articles: recentArticles,
+        count: recentArticles.length
+    });
+});
+/**
+ * Get activity log for real-time updates
+ */
+router.get('/activity-log', async (req, res) => {
+    const { since, limit = 50 } = req.query;
+    let logs = activityLog;
+    // Filter by since ID if provided
+    if (since) {
+        const sinceId = Number(since);
+        logs = logs.filter(entry => entry.id > sinceId);
+    }
+    // Limit results
+    logs = logs.slice(0, Number(limit));
+    res.json({
+        logs,
+        count: logs.length,
+        totalLogs: activityLog.length,
+        latestId: activityLog[0]?.id || 0
+    });
+});
+/**
+ * Get sitemap URLs - fetches sitemap.xml and parses URLs for display
+ * Uses current category context for dynamic sitemap URL
+ */
+router.get('/sitemap', async (_req, res) => {
+    try {
+        // Get category from current context or default
+        const category = v3CategoryContext?.categorySlug || 'petinsurance';
+        const sitemap = await fetchCurrentSitemap(category);
+        if (!sitemap) {
+            return res.json({
+                urls: [],
+                count: 0,
+                error: 'Could not fetch sitemap'
+            });
+        }
+        // Parse URLs from sitemap XML
+        const urlMatches = sitemap.match(/<loc>([^<]+)<\/loc>/g) || [];
+        const urls = urlMatches.map(match => {
+            const url = match.replace(/<\/?loc>/g, '');
+            // Extract slug from URL - use dynamic category pattern
+            const slugMatch = url.match(new RegExp(`\\/${category}\\/([^/]+)\\/?$`));
+            const slug = slugMatch ? slugMatch[1] : url;
+            // Try to extract lastmod if present
+            return {
+                url,
+                slug,
+                title: slug.split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+            };
+        });
+        // Sort by slug alphabetically
+        urls.sort((a, b) => a.slug.localeCompare(b.slug));
+        res.json({
+            urls,
+            count: urls.length,
+            source: `https://catsluvus.com/${category}/sitemap.xml`,
+            fetchedAt: new Date().toISOString()
+        });
+    }
+    catch (error) {
+        res.status(500).json({
+            error: error.message || 'Failed to fetch sitemap',
+            urls: [],
+            count: 0
+        });
+    }
+});
+/**
+ * Get all keywords (paginated)
+ */
+router.get('/keywords', async (req, res) => {
+    const { limit = 100, offset = 0, search } = req.query;
+    try {
+        let keywords = seo_data_1.ALL_KEYWORDS;
+        // Filter by search if provided
+        if (search && typeof search === 'string') {
+            const searchLower = search.toLowerCase();
+            keywords = keywords.filter(kw => kw.toLowerCase().includes(searchLower));
+        }
+        const start = Number(offset);
+        const end = start + Number(limit);
+        const paginatedKeywords = keywords.slice(start, end);
+        res.json({
+            keywords: paginatedKeywords,
+            total: keywords.length,
+            offset: start,
+            limit: Number(limit)
+        });
+    }
+    catch (error) {
+        res.status(500).json({
+            error: error.message || 'Failed to load keywords'
+        });
+    }
+});
+/**
+ * Get keyword stats
+ */
+router.get('/stats', async (_req, res) => {
+    try {
+        const keywordStats = (0, seo_data_1.getKeywordStats)();
+        res.json({
+            keywords: keywordStats,
+            authors: seo_data_1.EXPERT_AUTHORS.map(a => ({ name: a.name, credentials: a.credentials, expertise: a.expertise })),
+            sources: Object.keys(seo_data_1.CREDIBLE_SOURCES).length,
+            thresholds: seo_data_1.SEO_THRESHOLDS,
+            entities: {
+                base: seo_data_1.ENTITIES.base.length,
+                dog: seo_data_1.ENTITIES.dog.length,
+                cat: seo_data_1.ENTITIES.cat.length
+            },
+            generated: stats.generated,
+            pending: stats.pending
+        });
+    }
+    catch (error) {
+        res.status(500).json({
+            error: error.message || 'Failed to get stats'
+        });
+    }
+});
+/**
+ * Get AI image generation quota status
+ */
+router.get('/image-quota', async (_req, res) => {
+    try {
+        const quota = (0, cloudflare_image_gen_1.getImageQuotaStatus)();
+        res.json({
+            success: true,
+            quota: {
+                used: quota.used,
+                limit: quota.limit,
+                remaining: quota.remaining,
+                resetDate: quota.resetDate,
+                percentUsed: Math.round((quota.used / quota.limit) * 100)
+            },
+            info: {
+                model: 'FLUX.1 schnell',
+                resolution: '1024x768',
+                neuronsPerImage: 58,
+                dailyNeuronBudget: 10000
+            }
+        });
+    }
+    catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message || 'Failed to get image quota'
+        });
+    }
+});
+/**
+ * Get random keywords for batch processing
+ */
+router.get('/keywords/random', async (req, res) => {
+    const { count = 10 } = req.query;
+    try {
+        const shuffled = [...seo_data_1.ALL_KEYWORDS].sort(() => 0.5 - Math.random());
+        const randomKeywords = shuffled.slice(0, Number(count));
+        res.json({
+            keywords: randomKeywords,
+            count: randomKeywords.length
+        });
+    }
+    catch (error) {
+        res.status(500).json({
+            error: error.message || 'Failed to get random keywords'
+        });
+    }
+});
+// Autonomous mode state - runs continuously at max speed (no interval delay)
+let autonomousRunning = false;
+// V3 Research Phase State - must complete before generation can start
+let researchEngine = null;
+let researchPhaseOutput = null;
+let activeCategoryContext = null;
+let researchPhaseStatus = 'idle';
+// ANSI color codes for terminal output
+const colors = {
+    reset: '\x1b[0m',
+    bold: '\x1b[1m',
+    dim: '\x1b[2m',
+    red: '\x1b[31m',
+    green: '\x1b[32m',
+    yellow: '\x1b[33m',
+    blue: '\x1b[34m',
+    magenta: '\x1b[35m',
+    cyan: '\x1b[36m',
+    white: '\x1b[37m',
+    bgGreen: '\x1b[42m',
+    bgRed: '\x1b[41m',
+    bgYellow: '\x1b[43m',
+    bgBlue: '\x1b[44m',
+    bgCyan: '\x1b[46m'
+};
+// Create clickable hyperlink for terminals that support OSC 8
+function hyperlink(url, text) {
+    const displayText = text || url;
+    return `\x1b]8;;${url}\x07${colors.cyan}${colors.bold}${displayText}${colors.reset}\x1b]8;;\x07`;
+}
+// Color-coded SEO score based on value
+function coloredScore(score) {
+    if (score >= 90)
+        return `${colors.bgGreen}${colors.bold} ${score}/100 ${colors.reset}`;
+    if (score >= 80)
+        return `${colors.green}${colors.bold}${score}/100${colors.reset}`;
+    if (score >= 70)
+        return `${colors.yellow}${colors.bold}${score}/100${colors.reset}`;
+    return `${colors.red}${colors.bold}${score}/100${colors.reset}`;
+}
+// Heartbeat stats for 1-minute status logs
+let heartbeatInterval = null;
+let lastHeartbeatTime = Date.now();
+let articlesThisMinute = 0;
+let recentSeoScores = [];
+let lastGeneratedSlug = '';
+const HEARTBEAT_INTERVAL_MS = 60000; // 1 minute
+function startHeartbeat() {
+    if (heartbeatInterval)
+        return; // Already running
+    lastHeartbeatTime = Date.now();
+    articlesThisMinute = 0;
+    recentSeoScores = [];
+    heartbeatInterval = setInterval(() => {
+        const avgScore = recentSeoScores.length > 0
+            ? Math.round(recentSeoScores.reduce((a, b) => a + b, 0) / recentSeoScores.length)
+            : 0;
+        const statusColor = autonomousRunning ? colors.bgGreen : colors.bgRed;
+        const statusText = autonomousRunning ? ' RUNNING ' : ' STOPPED ';
+        const rate = articlesThisMinute;
+        const progress = `${stats.generated}/${seo_data_1.ALL_KEYWORDS.length}`;
+        const percent = stats.percentComplete;
+        const lastUrl = lastGeneratedSlug
+            ? hyperlink(`https://catsluvus.com/petinsurance/${lastGeneratedSlug}`, lastGeneratedSlug)
+            : 'none yet';
+        // Worker stats display
+        const copilotStats = workerStats.copilot.count > 0
+            ? `${workerStats.copilot.count} articles, avg ${workerStats.copilot.avgScore}/100`
+            : 'not started';
+        const cloudflareStats = workerStats.cloudflare.count > 0
+            ? `${workerStats.cloudflare.count} articles, avg ${workerStats.cloudflare.avgScore}/100`
+            : 'not started';
+        console.log(`\n${colors.cyan}${'═'.repeat(70)}${colors.reset}`);
+        console.log(`${colors.bold}📊 HEARTBEAT${colors.reset} ${statusColor}${colors.bold}${statusText}${colors.reset} ${colors.dim}${new Date().toLocaleTimeString()}${colors.reset}`);
+        console.log(`${colors.cyan}${'─'.repeat(70)}${colors.reset}`);
+        console.log(`   ${colors.green}📈 Progress:${colors.reset}    ${colors.bold}${progress}${colors.reset} ${colors.dim}(${percent}%)${colors.reset}`);
+        console.log(`   ${colors.yellow}⚡ Rate:${colors.reset}        ${colors.bold}${rate}${colors.reset} articles/min (2 workers)`);
+        console.log(`   ${colors.magenta}🎯 Avg SEO:${colors.reset}     ${avgScore > 0 ? coloredScore(avgScore) : colors.dim + 'waiting...' + colors.reset}`);
+        console.log(`   ${colors.blue}📋 Pending:${colors.reset}     ${colors.bold}${stats.pending}${colors.reset} keywords left`);
+        console.log(`   ${colors.cyan}🔗 Last:${colors.reset}        ${lastUrl}`);
+        console.log(`${colors.cyan}${'─'.repeat(70)}${colors.reset}`);
+        console.log(`   ${colors.bold}🤖 Worker Stats (A/B Test):${colors.reset}`);
+        console.log(`      ${colors.yellow}Copilot:${colors.reset}    ${copilotStats}`);
+        console.log(`      ${colors.green}Cloudflare:${colors.reset} ${cloudflareStats} ${colors.dim}(FREE)${colors.reset}`);
+        console.log(`${colors.cyan}${'═'.repeat(70)}${colors.reset}\n`);
+        // Reset counters for next minute
+        articlesThisMinute = 0;
+        recentSeoScores = [];
+        lastHeartbeatTime = Date.now();
+    }, HEARTBEAT_INTERVAL_MS);
+}
+function stopHeartbeat() {
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+    }
+}
+function recordArticleGenerated(seoScore, slug) {
+    articlesThisMinute++;
+    if (seoScore > 0) {
+        recentSeoScores.push(seoScore);
+    }
+    if (slug) {
+        lastGeneratedSlug = slug;
+    }
+}
+// Color-coded log for successful article generation
+function logSuccess(title, slug, seoScore, wordCount, model = 'gpt-4.1') {
+    const url = `https://catsluvus.com/petinsurance/${slug}`;
+    console.log(`\n${colors.bgGreen}${colors.bold} ✅ [COPILOT CLI] ${model} ${colors.reset}`);
+    console.log(`   ${colors.bold}Title:${colors.reset} ${title}`);
+    console.log(`   ${colors.bold}SEO Score:${colors.reset} ${coloredScore(seoScore)}`);
+    console.log(`   ${colors.bold}Words:${colors.reset} ${wordCount}`);
+    console.log(`   ${colors.bold}URL:${colors.reset} ${hyperlink(url)}`);
+    console.log('');
+}
+// ============================================================================
+// V3 RESEARCH PHASE ENDPOINTS
+// Research must complete before generation can start
+// Agent makes ALL strategic decisions - infrastructure executes them
+// ============================================================================
+/**
+ * Start research phase - agent discovers niche, keywords, and monetization strategy
+ */
+router.post('/research/start', async (req, res) => {
+    try {
+        if (researchPhaseStatus === 'discovering' || researchPhaseStatus === 'analyzing') {
+            return res.json({
+                success: false,
+                message: 'Research phase already in progress',
+                status: researchPhaseStatus
+            });
+        }
+        const { vertical, excludeCategories, minCPC, minVolume } = req.body;
+        researchEngine = (0, research_engine_1.createResearchEngine)();
+        researchPhaseStatus = 'discovering';
+        researchPhaseOutput = (0, category_context_1.createEmptyResearchPhaseOutput)();
+        researchPhaseOutput.status = 'discovering';
+        researchPhaseOutput.startedAt = new Date().toISOString();
+        addActivityLog('info', 'Research phase STARTED - agent discovering niches', {
+            vertical: vertical || 'cat/pet',
+            excludeCategories: excludeCategories || ['petinsurance']
+        });
+        const prompt = researchEngine.getDiscoverNichesPrompt({
+            vertical,
+            excludeCategories: excludeCategories || ['petinsurance'],
+            minCPC: minCPC || 2,
+            minVolume: minVolume || 500
+        });
+        res.json({
+            success: true,
+            status: 'discovering',
+            message: 'Research phase started - agent will discover profitable niches',
+            prompt: prompt,
+            nextStep: 'Use /research/submit-discovery to submit agent findings'
+        });
+    }
+    catch (error) {
+        researchPhaseStatus = 'error';
+        addActivityLog('error', 'Research phase failed to start', { error: error.message });
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * Submit niche discovery results from agent
+ */
+router.post('/research/submit-discovery', async (req, res) => {
+    try {
+        if (!researchEngine || !researchPhaseOutput) {
+            return res.status(400).json({ error: 'Research phase not started. Call /research/start first.' });
+        }
+        if (researchPhaseStatus !== 'discovering') {
+            return res.status(400).json({
+                error: `Invalid state: expected 'discovering', got '${researchPhaseStatus}'`,
+                currentStatus: researchPhaseStatus,
+                hint: researchPhaseStatus === 'idle' ? 'Call /research/start first' : 'Already past discovery phase'
+            });
+        }
+        const { discoveryResponse } = req.body;
+        if (!discoveryResponse) {
+            return res.status(400).json({ error: 'Missing discoveryResponse in request body' });
+        }
+        const parsed = researchEngine.parseAgentResponse(discoveryResponse);
+        if (!parsed) {
+            return res.status(400).json({ error: 'Failed to parse agent response', progress: researchEngine.getProgress() });
+        }
+        if (parsed.selectedNiche) {
+            researchPhaseOutput.nicheDiscovery = {
+                vertical: 'cat/pet',
+                niche: parsed.selectedNiche.name,
+                reasoning: parsed.selectedNiche.reasoning,
+                marketSize: parsed.selectedNiche.marketSize || '',
+                competitorCount: parsed.selectedNiche.topCompetitors?.length || 0,
+                topCompetitors: parsed.selectedNiche.topCompetitors || []
+            };
+        }
+        researchPhaseStatus = 'analyzing';
+        researchPhaseOutput.status = 'analyzing';
+        const analyzePrompt = researchEngine.getAnalyzeNichePrompt(researchPhaseOutput.nicheDiscovery.niche, researchPhaseOutput.nicheDiscovery.topCompetitors);
+        addActivityLog('info', `Niche selected: ${researchPhaseOutput.nicheDiscovery.niche}`, {
+            reasoning: researchPhaseOutput.nicheDiscovery.reasoning
+        });
+        res.json({
+            success: true,
+            status: 'analyzing',
+            selectedNiche: researchPhaseOutput.nicheDiscovery,
+            prompt: analyzePrompt,
+            nextStep: 'Use /research/submit-analysis to submit detailed analysis'
+        });
+    }
+    catch (error) {
+        researchPhaseStatus = 'error';
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * Submit niche analysis results from agent
+ */
+router.post('/research/submit-analysis', async (req, res) => {
+    try {
+        if (!researchEngine || !researchPhaseOutput) {
+            return res.status(400).json({ error: 'Research phase not started' });
+        }
+        if (researchPhaseStatus !== 'analyzing') {
+            return res.status(400).json({
+                error: `Invalid state: expected 'analyzing', got '${researchPhaseStatus}'`,
+                currentStatus: researchPhaseStatus,
+                hint: researchPhaseStatus === 'discovering' ? 'Submit discovery first via /research/submit-discovery' : 'State mismatch'
+            });
+        }
+        const { analysisResponse } = req.body;
+        if (!analysisResponse) {
+            return res.status(400).json({ error: 'Missing analysisResponse in request body' });
+        }
+        const parsed = researchEngine.parseAgentResponse(analysisResponse);
+        if (!parsed) {
+            return res.status(400).json({ error: 'Failed to parse analysis response' });
+        }
+        if (parsed.keywordClusters) {
+            researchPhaseOutput.keywordResearch.clusters = parsed.keywordClusters;
+        }
+        if (parsed.competitorAnalysis) {
+            researchPhaseOutput.competitorAnalysis = parsed.competitorAnalysis;
+        }
+        if (parsed.affiliatePrograms) {
+            researchPhaseOutput.monetization.affiliatePrograms = parsed.affiliatePrograms;
+        }
+        if (parsed.recommendedAuthors) {
+            researchPhaseOutput.recommendedAuthors = parsed.recommendedAuthors;
+        }
+        if (parsed.nicheAnalysis) {
+            if (parsed.nicheAnalysis.growthTrend) {
+                researchPhaseOutput.growthTrend = parsed.nicheAnalysis.growthTrend;
+            }
+            if (parsed.nicheAnalysis.competitionLevel) {
+                researchPhaseOutput.competitionLevel = parsed.nicheAnalysis.competitionLevel;
+            }
+        }
+        researchPhaseStatus = 'prioritizing';
+        researchPhaseOutput.status = 'prioritizing';
+        const keywordPrompt = researchEngine.getExtractKeywordsPrompt(researchPhaseOutput.nicheDiscovery.niche, researchPhaseOutput.keywordResearch.clusters);
+        addActivityLog('info', 'Niche analysis complete - extracting keywords', {
+            clusters: researchPhaseOutput.keywordResearch.clusters.length,
+            affiliatePrograms: researchPhaseOutput.monetization.affiliatePrograms.length
+        });
+        res.json({
+            success: true,
+            status: 'prioritizing',
+            analysis: {
+                clusters: researchPhaseOutput.keywordResearch.clusters,
+                competitorGaps: researchPhaseOutput.competitorAnalysis.gaps,
+                affiliatePrograms: researchPhaseOutput.monetization.affiliatePrograms
+            },
+            prompt: keywordPrompt,
+            nextStep: 'Use /research/submit-keywords to submit keyword list'
+        });
+    }
+    catch (error) {
+        researchPhaseStatus = 'error';
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * Submit keywords from agent and finalize CategoryContext
+ */
+router.post('/research/submit-keywords', async (req, res) => {
+    try {
+        if (!researchEngine || !researchPhaseOutput) {
+            return res.status(400).json({ error: 'Research phase not started' });
+        }
+        if (researchPhaseStatus !== 'prioritizing') {
+            return res.status(400).json({
+                error: `Invalid state: expected 'prioritizing', got '${researchPhaseStatus}'`,
+                currentStatus: researchPhaseStatus,
+                hint: researchPhaseStatus === 'analyzing' ? 'Submit analysis first via /research/submit-analysis' : 'State mismatch'
+            });
+        }
+        const { keywordsResponse, domain } = req.body;
+        if (!keywordsResponse) {
+            return res.status(400).json({ error: 'Missing keywordsResponse in request body' });
+        }
+        const parsed = researchEngine.parseAgentResponse(keywordsResponse);
+        if (!parsed || !parsed.keywords) {
+            return res.status(400).json({ error: 'Failed to parse keywords response' });
+        }
+        researchPhaseOutput.keywordResearch.topKeywords = parsed.keywords;
+        researchPhaseOutput.keywordResearch.totalKeywords = parsed.keywords.length;
+        if (parsed.summary) {
+            researchPhaseOutput.keywordResearch.avgCPC = parsed.summary.averageCPC || 0;
+            researchPhaseOutput.keywordResearch.avgVolume = parsed.summary.totalMonthlyVolume / parsed.summary.totalKeywords || 0;
+        }
+        const categorySlug = researchPhaseOutput.nicheDiscovery.niche.toLowerCase().replace(/\s+/g, '-');
+        researchPhaseOutput.targetStructure = {
+            domain: domain || 'catsluvus.com',
+            basePath: `/${categorySlug}`,
+            slugFormat: `/${categorySlug}/{keyword-slug}`,
+            sitemapPath: `/${categorySlug}/sitemap.xml`,
+            kvPrefix: `${categorySlug}:`
+        };
+        activeCategoryContext = researchEngine.outputCategoryContext(researchPhaseOutput, domain);
+        researchPhaseOutput.categoryContext = activeCategoryContext;
+        researchPhaseStatus = 'complete';
+        researchPhaseOutput.status = 'complete';
+        researchPhaseOutput.completedAt = new Date().toISOString();
+        const kvResult = await saveResearchToKV(researchPhaseOutput, activeCategoryContext);
+        if (!kvResult.success) {
+            addActivityLog('error', `Failed to persist research to KV: ${kvResult.error}`, {});
+        }
+        else {
+            addActivityLog('info', `Research persisted to KV: ${activeCategoryContext.kvPrefix}`, {});
+        }
+        // AUTO-CONFIGURE CLOUDFLARE WORKER ROUTE for this category
+        // This ensures the public domain routes /{category}/* to the Worker
+        const categorySlugForRoute = activeCategoryContext.basePath?.replace(/^\//, '') || categorySlug;
+        console.log(`[SEO-V3] Configuring Worker Route for new category: ${categorySlugForRoute}`);
+        const routeResult = await ensureWorkerRouteForCategory(categorySlugForRoute);
+        if (routeResult.success) {
+            addActivityLog('info', `Worker Route configured: catsluvus.com/${categorySlugForRoute}/*`, {
+                routeId: routeResult.routeId
+            });
+        }
+        else {
+            addActivityLog('warning', `Worker Route config failed: ${routeResult.error}`, {});
+        }
+        addActivityLog('info', 'Research phase COMPLETE - CategoryContext ready', {
+            category: activeCategoryContext.categoryName,
+            keywords: activeCategoryContext.keywords.length,
+            basePath: activeCategoryContext.basePath
+        });
+        res.json({
+            success: true,
+            status: 'complete',
+            categoryContext: activeCategoryContext,
+            kvPersisted: kvResult.success,
+            message: 'Research complete. Use /autonomous/start to begin generation with this category.'
+        });
+    }
+    catch (error) {
+        researchPhaseStatus = 'error';
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * Get current research phase status
+ */
+router.get('/research/status', async (req, res) => {
+    const attemptRecovery = req.query.recover === 'true';
+    const kvPrefix = req.query.kvPrefix;
+    if (attemptRecovery && kvPrefix && !activeCategoryContext) {
+        const recovered = await loadResearchFromKV(kvPrefix);
+        if (recovered.categoryContext) {
+            activeCategoryContext = recovered.categoryContext;
+            researchPhaseOutput = recovered.researchOutput;
+            researchPhaseStatus = 'complete';
+            addActivityLog('info', `Recovered research from KV: ${kvPrefix}`, {});
+        }
+    }
+    res.json({
+        status: researchPhaseStatus,
+        hasResearchEngine: !!researchEngine,
+        hasOutput: !!researchPhaseOutput,
+        hasCategoryContext: !!activeCategoryContext,
+        output: researchPhaseOutput ? {
+            id: researchPhaseOutput.id,
+            niche: researchPhaseOutput.nicheDiscovery?.niche,
+            keywordCount: researchPhaseOutput.keywordResearch?.totalKeywords,
+            status: researchPhaseOutput.status
+        } : null,
+        categoryContext: activeCategoryContext ? {
+            categoryName: activeCategoryContext.categoryName,
+            basePath: activeCategoryContext.basePath,
+            keywordCount: activeCategoryContext.keywords.length,
+            kvPrefix: activeCategoryContext.kvPrefix
+        } : null
+    });
+});
+/**
+ * Reset research phase to start fresh
+ */
+router.post('/research/reset', async (_req, res) => {
+    researchEngine = null;
+    researchPhaseOutput = null;
+    activeCategoryContext = null;
+    researchPhaseStatus = 'idle';
+    addActivityLog('info', 'Research phase RESET');
+    res.json({
+        success: true,
+        status: 'idle',
+        message: 'Research phase reset. Call /research/start to begin new research.'
+    });
+});
+/**
+ * Get CategoryContext for use in generation
+ */
+router.get('/research/context', async (_req, res) => {
+    if (!activeCategoryContext) {
+        return res.status(404).json({
+            error: 'No CategoryContext available. Complete research phase first.'
+        });
+    }
+    res.json(activeCategoryContext);
+});
+// ============================================================================
+// AUTONOMOUS GENERATION ENDPOINTS
+// ============================================================================
+/**
+ * Start autonomous generation mode
+ * V3 uses exclusive categories - auto-discovers and generates for V3-only categories
+ * Runs as fast as possible with no delay - rate limits handle throttling naturally
+ */
+router.post('/autonomous/start', async (req, res) => {
+    if (autonomousRunning) {
+        addActivityLog('info', 'Autonomous mode already running');
+        return res.json({ running: true, message: 'Already running' });
+    }
+    autonomousRunning = true;
+    startHeartbeat();
+    resetSessionHealth();
+    // V3 FIX: Use V3-exclusive category generation instead of shared V2 keywords
+    // This ensures V3 works on its own categories (cat-toys-interactive, etc.)
+    // and doesn't compete with V2 on the same keywords
+    const useV3Categories = req.body.useV3Categories !== false; // Default to true
+    if (useV3Categories) {
+        // Set V3 autonomous flag (separate from legacy autonomousRunning)
+        v3AutonomousRunning = true;
+        addActivityLog('info', `V3 Autonomous mode STARTED - using Copilot CLI autonomous discovery`, {
+            mode: 'autonomous-copilot-discovery'
+        });
+        // Start V3 category-based generation (uses runV3AutonomousGeneration)
+        runV3AutonomousGeneration();
+        res.json({
+            success: true,
+            running: true,
+            mode: 'v3-categories',
+            message: 'V3 autonomous generation started (Copilot CLI discovery)',
+            discoveryMode: 'autonomous-copilot-cli'
+        });
+    }
+    else {
+        // Legacy mode: use shared V2 keywords (for backwards compatibility)
+        addActivityLog('info', `Autonomous mode STARTED (legacy V2 keywords)`, {
+            remaining: stats.pending
+        });
+        generateNextArticle();
+        res.json({
+            success: true,
+            running: true,
+            mode: 'legacy-v2-keywords',
+            message: 'Autonomous generation started (legacy V2 keywords)'
+        });
+    }
+});
+/**
+ * Stop autonomous generation (both V2 legacy and V3 category modes)
+ */
+router.post('/autonomous/stop', async (_req, res) => {
+    const wasV3Running = v3AutonomousRunning;
+    const wasLegacyRunning = autonomousRunning;
+    autonomousRunning = false;
+    v3AutonomousRunning = false;
+    stopHeartbeat();
+    addActivityLog('info', 'Autonomous mode STOPPED', {
+        v3Mode: wasV3Running,
+        legacyMode: wasLegacyRunning,
+        remaining: stats.pending,
+        queuePosition: stats.generated
+    });
+    res.json({
+        success: true,
+        running: false,
+        stoppedModes: {
+            v3Categories: wasV3Running,
+            legacyV2Keywords: wasLegacyRunning
+        },
+        message: 'Autonomous generation stopped'
+    });
+});
+/**
+ * Session Health - cockpit banner data for the V3 UI
+ */
+router.get('/session-health', (_req, res) => {
+    const active = autonomousRunning || v3AutonomousRunning;
+    const uptimeMs = sessionHealth.sessionStartTime ? Date.now() - sessionHealth.sessionStartTime : 0;
+    // Format uptime as human-readable string
+    let uptime = '0s';
+    if (uptimeMs > 0) {
+        const totalSec = Math.floor(uptimeMs / 1000);
+        const h = Math.floor(totalSec / 3600);
+        const m = Math.floor((totalSec % 3600) / 60);
+        if (h > 0)
+            uptime = `${h}h ${m}m`;
+        else if (m > 0)
+            uptime = `${m}m`;
+        else
+            uptime = `${totalSec}s`;
+    }
+    // Format rate
+    let rate = '--';
+    if (sessionHealth.articlesGenerated > 0 && uptimeMs > 0) {
+        const minPerArticle = (uptimeMs / 60000) / sessionHealth.articlesGenerated;
+        rate = `1 every ${minPerArticle.toFixed(1)} min`;
+    }
+    // Format current stage duration
+    let currentStageDuration = null;
+    if (sessionHealth.currentStageStartTime) {
+        const elapsed = Math.floor((Date.now() - sessionHealth.currentStageStartTime) / 1000);
+        currentStageDuration = `${elapsed}s`;
+    }
+    const avgSeoScore = sessionHealth.seoScoreCount > 0
+        ? Math.round(sessionHealth.totalSeoScore / sessionHealth.seoScoreCount)
+        : 0;
+    res.json({
+        active,
+        uptime,
+        uptimeMs,
+        generated: sessionHealth.articlesGenerated,
+        failed: sessionHealth.articlesFailed,
+        deployed: sessionHealth.articlesDeployed,
+        avgSeoScore,
+        currentKeyword: sessionHealth.currentKeyword,
+        currentStage: sessionHealth.currentStage,
+        currentStageDuration,
+        rate,
+        avgGenerationMs: sessionHealth.avgGenerationMs,
+        consecutiveErrors: sessionHealth.consecutiveErrors,
+        lastError: sessionHealth.lastError
+    });
+});
+/**
+ * Get autonomous status with queue information
+ * Returns V3 category context when in V3 mode, legacy queue info otherwise
+ */
+router.get('/autonomous/status', async (_req, res) => {
+    try {
+        // V3 MODE: Return V3-exclusive category context
+        if (v3AutonomousRunning || v3CategoryContext) {
+            const pendingKeywords = v3CategoryContext?.keywords?.filter(k => k.status === 'pending') || [];
+            const totalKeywords = v3CategoryContext?.keywords?.length || 0;
+            const completedKeywords = totalKeywords - pendingKeywords.length;
+            const percentComplete = totalKeywords > 0 ? ((completedKeywords / totalKeywords) * 100).toFixed(2) : '0.00';
+            // Get next keyword from V3 context
+            const sortedPending = [...pendingKeywords].sort((a, b) => {
+                const priorityOrder = { high: 0, medium: 1, low: 2 };
+                const aPriority = (a.priority || 'low').toLowerCase();
+                const bPriority = (b.priority || 'low').toLowerCase();
+                const priorityDiff = (priorityOrder[aPriority] ?? 2) - (priorityOrder[bPriority] ?? 2);
+                if (priorityDiff !== 0)
+                    return priorityDiff;
+                return (b.score || 0) - (a.score || 0);
+            });
+            return res.json({
+                running: v3AutonomousRunning,
+                mode: 'v3-categories',
+                generated: completedKeywords,
+                remaining: pendingKeywords.length,
+                totalKeywords: totalKeywords,
+                percentComplete: percentComplete,
+                category: v3CategoryContext?.categorySlug || null,
+                niche: v3CategoryContext?.niche || null,
+                domain: v3CategoryContext?.domain || 'catsluvus.com',
+                basePath: v3CategoryContext?.basePath || null,
+                nextKeyword: sortedPending[0] ? {
+                    keyword: sortedPending[0].keyword,
+                    slug: sortedPending[0].slug,
+                    priority: sortedPending[0].priority,
+                    score: sortedPending[0].score,
+                    category: v3CategoryContext?.categorySlug
+                } : null,
+                discoveryMode: 'autonomous-copilot-cli'
+            });
+        }
+        // LEGACY MODE: Return V2 keyword queue info
+        const queueStatus = await getGenerationQueueStatus();
+        res.json({
+            running: autonomousRunning,
+            mode: 'legacy-v2-keywords',
+            generated: queueStatus.generated,
+            remaining: queueStatus.remaining,
+            totalKeywords: queueStatus.totalKeywords,
+            percentComplete: queueStatus.percentComplete,
+            pendingByPriority: queueStatus.topPending,
+            nextKeyword: queueStatus.nextKeyword ? {
+                keyword: queueStatus.nextKeyword.keyword,
+                slug: queueStatus.nextKeyword.slug,
+                priority: queueStatus.nextKeyword.priority,
+                score: queueStatus.nextKeyword.score,
+                category: queueStatus.nextKeyword.category
+            } : null
+        });
+    }
+    catch (error) {
+        res.json({
+            running: autonomousRunning || v3AutonomousRunning,
+            generated: stats.generated,
+            pending: stats.pending,
+            percentComplete: stats.percentComplete,
+            error: error.message
+        });
+    }
+});
+/**
+ * Manually create Cloudflare Worker routes for a category
+ * Used when auto-creation fails or to verify routes exist
+ */
+// ============================================================
+// INDEX STATUS DASHBOARD ENDPOINTS (V3 Autonomous Indexing)
+// ============================================================
+/**
+ * Get indexing status dashboard data
+ * GET /api/seo-generator-v3/index-status
+ */
+router.get('/index-status', async (_req, res) => {
+    try {
+        await ensureIndexTrackerInitialized();
+        const status = (0, indexing_tracker_1.getIndexStatus)();
+        // Calculate summary
+        const summary = {
+            totalTracked: status.stats.totalTracked,
+            indexed: status.stats.indexed,
+            pending: status.stats.pending,
+            failed: status.stats.failed,
+            successRate: status.stats.totalTracked > 0
+                ? ((status.stats.indexed / status.stats.totalTracked) * 100).toFixed(1) + '%'
+                : 'N/A',
+            avgTimeToIndex: status.stats.avgTimeToIndex.toFixed(1) + ' hours',
+            lastUpdated: status.stats.lastUpdated
+        };
+        // Categorize queue items
+        const pendingItems = status.queue.filter(i => i.status === 'pending' || i.status === 'retry_scheduled');
+        const checkingItems = status.queue.filter(i => i.status === 'checking');
+        const indexedItems = status.queue.filter(i => i.status === 'indexed').slice(-20);
+        const failedItems = status.queue.filter(i => i.status === 'failed');
+        res.json({
+            success: true,
+            summary,
+            queue: {
+                pending: pendingItems.length,
+                checking: checkingItems.length,
+                indexed: indexedItems.length,
+                failed: failedItems.length,
+                items: {
+                    pending: pendingItems.slice(0, 20),
+                    failed: failedItems,
+                    recentlyIndexed: indexedItems
+                }
+            },
+            recentHistory: status.recentHistory.slice(-10)
+        });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+/**
+ * Force recheck a specific URL
+ * POST /api/seo-generator-v3/index-status/recheck
+ */
+router.post('/index-status/recheck', async (req, res) => {
+    try {
+        await ensureIndexTrackerInitialized();
+        const { url } = req.body;
+        if (!url) {
+            return res.status(400).json({ success: false, error: 'URL required' });
+        }
+        const result = await (0, indexing_tracker_1.forceRecheck)(url);
+        res.json(result);
+    }
+    catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+/**
+ * Manually trigger indexing verification cycle
+ * POST /api/seo-generator-v3/index-status/process
+ */
+router.post('/index-status/process', async (req, res) => {
+    try {
+        await ensureIndexTrackerInitialized();
+        const result = await (0, indexing_tracker_1.processIndexQueue)();
+        // Log results to activity
+        for (const r of result.results) {
+            if (r.status === 'indexed') {
+                addActivityLog('success', `✅ ${r.message}`, { keyword: r.slug, url: r.url });
+            }
+            else if (r.status === 'failed') {
+                addActivityLog('error', `❌ ${r.message}`, { keyword: r.slug, url: r.url });
+            }
+            else if (r.status === 'retry') {
+                addActivityLog('info', `🔄 ${r.message}`, { keyword: r.slug, url: r.url });
+            }
+        }
+        res.json({
+            success: true,
+            ...result
+        });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+/**
+ * Cleanup old indexing records
+ * POST /api/seo-generator-v3/index-status/cleanup
+ */
+router.post('/index-status/cleanup', async (_req, res) => {
+    try {
+        await ensureIndexTrackerInitialized();
+        const removed = await (0, indexing_tracker_1.cleanupOldItems)();
+        res.json({ success: true, removed });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+router.post('/create-route', async (req, res) => {
+    try {
+        const { category } = req.body;
+        if (!category) {
+            return res.status(400).json({ error: 'Category is required' });
+        }
+        addActivityLog('info', `Manual route creation requested for: ${category}`);
+        const result = await ensureWorkerRouteForCategory(category);
+        if (result.success) {
+            addActivityLog('success', `Worker route created/verified for: ${category}`, { routeId: result.routeId });
+            return res.json({
+                success: true,
+                category,
+                routeId: result.routeId,
+                message: `Worker routes configured for ${category}`
+            });
+        }
+        else {
+            addActivityLog('error', `Route creation failed for ${category}: ${result.error}`);
+            return res.status(500).json({
+                success: false,
+                category,
+                error: result.error
+            });
+        }
+    }
+    catch (error) {
+        addActivityLog('error', `Route creation error: ${error.message}`);
+        return res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * List all current Cloudflare Worker routes for debugging
+ */
+router.get('/list-routes', async (_req, res) => {
+    try {
+        const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+        if (!cfApiToken) {
+            return res.status(400).json({ error: 'No Cloudflare API token configured' });
+        }
+        const routes = await fetchWorkerRoutes(cfApiToken);
+        // Filter routes for catsluvus.com
+        const catsluvusRoutes = routes.filter((r) => r.pattern?.includes('catsluvus.com'));
+        // Check which V3 categories have routes (dynamic from KV)
+        const allV3Cats = await getAllCategoryStatusKeys();
+        const v3CategoryRoutes = allV3Cats.map(cat => {
+            const hasRoute = catsluvusRoutes.some((r) => r.pattern?.includes(`/${cat}/`) || r.pattern?.includes(`/${cat}`));
+            return { category: cat, hasRoute, pattern: hasRoute ? `catsluvus.com/${cat}/*` : null };
+        });
+        res.json({
+            totalRoutes: routes.length,
+            catsluvusRoutes: catsluvusRoutes.length,
+            routes: catsluvusRoutes.map((r) => ({
+                id: r.id,
+                pattern: r.pattern,
+                script: r.script
+            })),
+            v3Categories: v3CategoryRoutes,
+            missingV3Routes: v3CategoryRoutes.filter(c => !c.hasRoute).map(c => c.category),
+            discoveryMode: 'autonomous-copilot-cli'
+        });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * Create routes for ALL V3 categories (dynamically from KV)
+ */
+router.post('/create-all-v3-routes', async (_req, res) => {
+    try {
+        const allV3Cats = await getAllCategoryStatusKeys();
+        const results = [];
+        for (const category of allV3Cats) {
+            const result = await ensureWorkerRouteForCategory(category);
+            results.push({
+                category,
+                success: result.success,
+                routeId: result.routeId,
+                error: result.error
+            });
+        }
+        const successful = results.filter(r => r.success).length;
+        const failed = results.filter(r => !r.success).length;
+        res.json({
+            message: `Created routes for ${successful}/${allV3Cats.length} V3 categories`,
+            successful,
+            failed,
+            results
+        });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * Manually trigger category discovery (for testing)
+ */
+router.post('/discover-category', async (_req, res) => {
+    try {
+        addActivityLog('info', '[V3] Manual category discovery triggered');
+        const category = await discoverNextCategory();
+        if (category) {
+            res.json({ success: true, category });
+        }
+        else {
+            res.json({ success: false, message: 'No categories available' });
+        }
+    }
+    catch (error) {
+        addActivityLog('error', `[V3] Discovery error: ${error.message}`);
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * Manually start a new category with keywords
+ */
+router.post('/start-category', async (req, res) => {
+    try {
+        const { slug, name, keywords } = req.body;
+        if (!slug) {
+            return res.status(400).json({ error: 'slug is required' });
+        }
+        addActivityLog('info', `[V3] Manual category start: ${slug}`);
+        // Create Worker routes
+        const routeResult = await ensureWorkerRouteForCategory(slug);
+        if (!routeResult.success) {
+            addActivityLog('warning', `[V3] Route creation warning: ${routeResult.error}`);
+        }
+        // If no keywords provided, generate them
+        let categoryKeywords = keywords;
+        if (!categoryKeywords || categoryKeywords.length === 0) {
+            const discovered = {
+                name: name || slug,
+                slug: slug,
+                estimatedKeywords: 30,
+                affiliatePotential: 'medium',
+                reasoning: 'Manually started category'
+            };
+            categoryKeywords = await generateCategoryKeywords(discovered);
+        }
+        if (categoryKeywords.length < 5) {
+            return res.status(400).json({ error: `Only ${categoryKeywords.length} keywords generated, need at least 5` });
+        }
+        // Save in-progress status
+        await saveCategoryStatus(slug, {
+            category: slug,
+            status: 'in_progress',
+            articleCount: 0,
+            expectedCount: categoryKeywords.length,
+            avgSeoScore: 0,
+            startedAt: new Date().toISOString()
+        });
+        addActivityLog('success', `[V3] Category initialized: ${slug}`, {
+            keywords: categoryKeywords.length,
+            routeCreated: routeResult.success
+        });
+        res.json({
+            success: true,
+            category: slug,
+            keywords: categoryKeywords.length,
+            routeCreated: routeResult.success,
+            message: 'Category routes and status created. To start generation, use the V3 autonomous flow.'
+        });
+    }
+    catch (error) {
+        addActivityLog('error', `[V3] Start category error: ${error.message}`);
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * Get category status
+ */
+router.get('/category-status/:category', async (req, res) => {
+    try {
+        const { category } = req.params;
+        const status = await getCategoryStatus(category);
+        const articleCount = await countArticlesInCategory(category);
+        res.json({
+            category,
+            status: status || { status: 'unknown' },
+            actualArticleCount: articleCount
+        });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * Regenerate all articles in a category (delete from KV and reset status)
+ */
+router.post('/regenerate-category/:category', async (req, res) => {
+    try {
+        const { category } = req.params;
+        const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+        if (!cfApiToken) {
+            return res.status(500).json({ error: 'Cloudflare API token not configured' });
+        }
+        console.log(`[SEO-V3] 🔄 Starting regeneration for category: ${category}`);
+        // 1. Get all article keys for this category from KV
+        const listUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/keys?prefix=${category}:`;
+        const listRes = await fetch(listUrl, { headers: { 'Authorization': `Bearer ${cfApiToken}` } });
+        const listData = await listRes.json();
+        const articleKeys = listData.result?.map((k) => k.name) || [];
+        console.log(`[SEO-V3] Found ${articleKeys.length} articles to delete in ${category}`);
+        // 2. Delete each article from KV
+        let deleted = 0;
+        for (const key of articleKeys) {
+            const deleteUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(key)}`;
+            try {
+                await fetch(deleteUrl, { method: 'DELETE', headers: { 'Authorization': `Bearer ${cfApiToken}` } });
+                deleted++;
+            }
+            catch (e) {
+                console.log(`[SEO-V3] Failed to delete ${key}`);
+            }
+        }
+        console.log(`[SEO-V3] ✓ Deleted ${deleted}/${articleKeys.length} articles`);
+        // 3. Reset category status to in_progress
+        const categoryStatus = await getCategoryStatus(category);
+        if (categoryStatus) {
+            await saveCategoryStatus(category, {
+                ...categoryStatus,
+                status: 'in_progress',
+                articleCount: 0,
+                completedAt: undefined
+            });
+            console.log(`[SEO-V3] ✓ Reset category status to in_progress`);
+        }
+        // 4. Reset keywords in research context if exists
+        const kvPrefix = `${category}:`;
+        const { categoryContext } = await loadResearchFromKV(kvPrefix);
+        if (categoryContext && categoryContext.keywords) {
+            categoryContext.keywords = categoryContext.keywords.map(k => ({ ...k, status: 'pending' }));
+            await saveResearchToKV({ researchPhase: 'regenerating' }, categoryContext);
+            console.log(`[SEO-V3] ✓ Reset ${categoryContext.keywords.length} keywords to pending`);
+        }
+        addActivityLog('info', `[V3] Regeneration started for ${category}`, { deleted, total: articleKeys.length });
+        res.json({
+            success: true,
+            category,
+            articlesDeleted: deleted,
+            message: `Deleted ${deleted} articles. Category reset to in_progress. V3 autonomous will regenerate.`
+        });
+    }
+    catch (error) {
+        console.error(`[SEO-V3] Regeneration error:`, error);
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * Regenerate ALL V3 categories (for major fixes like video/image bug)
+ */
+router.post('/regenerate-all', async (_req, res) => {
+    try {
+        const allStatusKeys = await getAllCategoryStatusKeys();
+        const allStatuses = await Promise.all(allStatusKeys.map(key => getCategoryStatus(key.split(':')[2]).then(s => s || { category: key.split(':')[2], status: 'unknown', articleCount: 0, expectedCount: 0, avgSeoScore: 0, startedAt: '' })));
+        const results = [];
+        console.log(`[SEO-V3] 🔄 Starting FULL regeneration of ${allStatuses.length} categories`);
+        for (const catStatus of allStatuses) {
+            const category = catStatus.category;
+            const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+            // Get articles for this category
+            const listUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/keys?prefix=${category}:`;
+            const listRes = await fetch(listUrl, { headers: { 'Authorization': `Bearer ${cfApiToken}` } });
+            const listData = await listRes.json();
+            const articleKeys = listData.result?.map((k) => k.name) || [];
+            // Delete articles
+            let deleted = 0;
+            for (const key of articleKeys) {
+                const deleteUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(key)}`;
+                try {
+                    await fetch(deleteUrl, { method: 'DELETE', headers: { 'Authorization': `Bearer ${cfApiToken}` } });
+                    deleted++;
+                }
+                catch (e) { }
+            }
+            // Reset status
+            await saveCategoryStatus(category, {
+                ...catStatus,
+                status: 'in_progress',
+                articleCount: 0,
+                completedAt: undefined
+            });
+            // Reset keywords
+            const kvPrefix = `${category}:`;
+            const { categoryContext } = await loadResearchFromKV(kvPrefix);
+            if (categoryContext && categoryContext.keywords) {
+                categoryContext.keywords = categoryContext.keywords.map(k => ({ ...k, status: 'pending' }));
+                await saveResearchToKV({ researchPhase: 'regenerating' }, categoryContext);
+            }
+            results.push({ category, deleted, keywordsReset: categoryContext?.keywords?.length || 0 });
+            console.log(`[SEO-V3] ✓ Reset ${category}: ${deleted} articles deleted`);
+        }
+        addActivityLog('success', `[V3] FULL REGENERATION: ${results.length} categories reset`, {
+            totalArticles: results.reduce((sum, r) => sum + r.deleted, 0)
+        });
+        res.json({
+            success: true,
+            categoriesReset: results.length,
+            totalArticlesDeleted: results.reduce((sum, r) => sum + r.deleted, 0),
+            results
+        });
+    }
+    catch (error) {
+        console.error(`[SEO-V3] Full regeneration error:`, error);
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * List all completed categories
+ */
+router.get('/completed-categories', async (_req, res) => {
+    try {
+        const completed = await getCompletedCategories();
+        res.json({ completed, count: completed.length });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+/**
+ * Get detailed generation queue with priority breakdown
+ */
+router.get('/queue', async (_req, res) => {
+    try {
+        const queueStatus = await getGenerationQueueStatus();
+        const priorityStats = (0, keyword_priorities_1.getKeywordStats)();
+        const topKeywords = (0, keyword_priorities_1.getTopKeywords)(5);
+        // Get top pending keywords for each priority
+        const existingSlugs = await fetchExistingArticleSlugs();
+        const pendingHigh = topKeywords.high.filter(k => !existingSlugs.has(k.slug));
+        const pendingMedium = topKeywords.medium.filter(k => !existingSlugs.has(k.slug));
+        const pendingLow = topKeywords.low.filter(k => !existingSlugs.has(k.slug));
+        res.json({
+            status: 'ok',
+            queue: {
+                totalKeywords: queueStatus.totalKeywords,
+                generated: queueStatus.generated,
+                remaining: queueStatus.remaining,
+                percentComplete: queueStatus.percentComplete
+            },
+            priorityBreakdown: {
+                total: priorityStats.byPriority,
+                pending: queueStatus.topPending
+            },
+            categoryBreakdown: priorityStats.byCategory,
+            nextToGenerate: queueStatus.nextKeyword,
+            samplePending: {
+                high: pendingHigh.slice(0, 5).map(k => ({ keyword: k.keyword, score: k.score })),
+                medium: pendingMedium.slice(0, 5).map(k => ({ keyword: k.keyword, score: k.score })),
+                low: pendingLow.slice(0, 5).map(k => ({ keyword: k.keyword, score: k.score }))
+            },
+            autonomousRunning
+        });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+// Helper function for autonomous generation using Copilot SDK - NO FALLBACK
+// Now uses prioritized keywords and duplicate tracking
+async function generateNextArticle() {
+    if (!autonomousRunning)
+        return;
+    const startTime = Date.now();
+    try {
+        // Get next prioritized keyword that hasn't been generated
+        addActivityLog('queue', 'Fetching next prioritized keyword from queue...');
+        const nextKw = await getNextPrioritizedKeyword();
+        if (!nextKw) {
+            addActivityLog('success', '[V1] All keywords have been generated! Pet Insurance queue complete.', {
+                remaining: 0
+            });
+            console.log('✅ [V1] All Pet Insurance keywords have been generated! Stopping autonomous mode.');
+            autonomousRunning = false;
+            return;
+        }
+        const { keyword, slug, priority, score, category } = nextKw;
+        // Note: Keyword is already locked in keywordsInProgress by getNextPrioritizedKeyword()
+        // Double-check the article doesn't already exist (race condition protection)
+        if (await articleExists(slug)) {
+            keywordsInProgress.delete(slug); // Release the lock
+            addActivityLog('info', `Skipping duplicate: "${keyword}"`, { keyword, slug, priority });
+            console.log(`⏭️ Skipping "${keyword}" - already exists in KV`);
+            // Invalidate cache and try next keyword
+            slugsCacheTime = 0;
+            setTimeout(generateNextArticle, 1000); // Try next keyword after 1 second
+            return;
+        }
+        // Log the start of generation
+        addActivityLog('generating', `Starting generation: "${keyword}"`, {
+            keyword,
+            slug,
+            priority,
+            score,
+            remaining: stats.pending
+        });
+        console.log(`🤖 Autonomous: Generating [${priority.toUpperCase()}] "${keyword}" (score: ${score}, category: ${category})`);
+        // Start a heartbeat timer to show progress during generation
+        let elapsed = 0;
+        const heartbeatInterval = setInterval(() => {
+            elapsed += 15;
+            addActivityLog('info', `⏳ Generating... (${elapsed}s elapsed)`, {
+                keyword,
+                slug,
+                priority
+            });
+        }, 15000); // Log every 15 seconds
+        let result;
+        try {
+            result = await generateWithCopilotSDK(keyword);
+        }
+        finally {
+            clearInterval(heartbeatInterval);
+        }
+        if (!result.success) {
+            keywordsInProgress.delete(slug); // Release the lock on failure
+            if (result.error?.includes('No model available') || result.error?.includes('policy enablement')) {
+                addActivityLog('error', 'STOPPED: GitHub Copilot not enabled', {
+                    keyword,
+                    slug
+                });
+                console.error('❌ Autonomous STOPPED: GitHub Copilot not enabled at https://github.com/settings/copilot');
+                autonomousRunning = false;
+                return;
+            }
+            addActivityLog('error', `Generation failed: ${result.error}`, {
+                keyword,
+                slug,
+                priority
+            });
+            console.error(`❌ Autonomous error: ${result.error}`);
+            // Continue to next article on non-fatal errors
+            if (autonomousRunning) {
+                setTimeout(generateNextArticle, 5000);
+            }
+            return;
+        }
+        const duration = Date.now() - startTime;
+        // Add to local cache immediately to prevent duplicates
+        existingArticleSlugs.add(slug);
+        (0, seo_data_1.registerArticleForLinking)(slug, 'petinsurance');
+        // Remove from in-progress (now complete)
+        keywordsInProgress.delete(slug);
+        // Update stats from queue status
+        const queueStatus = await getGenerationQueueStatus();
+        stats.generated = queueStatus.generated;
+        stats.pending = queueStatus.remaining;
+        stats.percentComplete = queueStatus.percentComplete;
+        // Store in recent articles
+        const articleData = {
+            keyword,
+            slug,
+            title: result.article.title,
+            wordCount: result.article.wordCount || 3500,
+            date: new Date().toISOString(),
+            deployed: result.deployed || false,
+            liveUrl: result.liveUrl || null,
+            priority,
+            score,
+            category
+        };
+        recentArticles.unshift(articleData);
+        recentArticles = recentArticles.slice(0, 50);
+        // Log successful generation with SEO score
+        const articleSeoScore = result.seoScore || 0;
+        const articleWordCount = result.article.wordCount || 3500;
+        // Record for heartbeat stats (with slug for last URL display)
+        recordArticleGenerated(articleSeoScore, slug);
+        // Color-coded success log with clickable URL
+        logSuccess(result.article.title, slug, articleSeoScore, articleWordCount);
+        addActivityLog('success', `Generated: "${result.article.title}" | SEO: ${articleSeoScore}/100`, {
+            keyword,
+            slug,
+            priority,
+            score,
+            seoScore: articleSeoScore,
+            wordCount: articleWordCount,
+            duration,
+            remaining: stats.pending
+        });
+        // Log deployment status
+        if (result.deployed) {
+            const liveUrl = result.liveUrl || `https://catsluvus.com/petinsurance/${slug}`;
+            addActivityLog('deployed', `Deployed to Cloudflare KV`, {
+                keyword,
+                slug,
+                url: liveUrl
+            });
+            // DataForSEO On-Page scoring (async, non-blocking, 10s delay for CDN propagation)
+            (0, dataforseo_client_1.getOnPageScoreWithRetry)(liveUrl, 2, 10000).then(dfsScore => {
+                if (dfsScore) {
+                    const categorized = (0, dataforseo_client_1.categorizeSEOIssues)(dfsScore.issues);
+                    const fixableCount = categorized.fixable.length;
+                    const infoCount = categorized.informational.length;
+                    console.log(`[DataForSEO] ${slug}: ${dfsScore.overallScore}/100 (${dfsScore.checks.passed} passed, ${dfsScore.checks.failed} failed) | Fixable: ${fixableCount}, Infrastructure: ${infoCount}`);
+                    addActivityLog('info', `[DataForSEO] Professional SEO: ${dfsScore.overallScore}/100`, {
+                        keyword,
+                        slug,
+                        dataForSEOScore: dfsScore.overallScore,
+                        passed: dfsScore.checks.passed,
+                        failed: dfsScore.checks.failed,
+                        fixableIssues: categorized.fixable.join(', ') || 'none',
+                        infrastructureIssues: categorized.informational.join(', ') || 'none'
+                    });
+                }
+            }).catch(() => { });
+        }
+        // Log progress update
+        addActivityLog('queue', `Progress: ${stats.generated}/${seo_data_1.ALL_KEYWORDS.length} (${stats.percentComplete}%)`, {
+            remaining: stats.pending,
+            queuePosition: stats.generated
+        });
+        // V3: Indexing verification cycle - run every 5 articles during autonomous mode
+        if (stats.generated % 5 === 0 && stats.generated > 0) {
+            ensureIndexTrackerInitialized().then(() => (0, indexing_tracker_1.processIndexQueue)()).then(result => {
+                if (result.checked > 0) {
+                    console.log(`[IndexTracker] Cycle: ${result.checked} checked, ${result.indexed} indexed, ${result.failed} failed`);
+                    for (const r of result.results) {
+                        if (r.status === 'indexed') {
+                            addActivityLog('success', `Index verified: ${r.slug}`, { url: r.url });
+                        }
+                        else if (r.status === 'failed') {
+                            addActivityLog('error', `Index failed: ${r.slug}`, { url: r.url });
+                        }
+                    }
+                }
+            }).catch(err => {
+                console.log(`[IndexTracker] Cycle error: ${err.message}`);
+            });
+        }
+        // Immediately start next article (no delay - max speed mode)
+        if (autonomousRunning) {
+            setImmediate(generateNextArticle);
+        }
+    }
+    catch (error) {
+        addActivityLog('error', `Error: ${error.message}`);
+        console.error('❌ Autonomous error:', error.message);
+        // On error, wait 5 seconds before retrying (rate limit backoff)
+        if (autonomousRunning) {
+            setTimeout(generateNextArticle, 5000);
+        }
+    }
+}
+// Worker 2: Cloudflare AI worker - runs in parallel with Copilot (replaced unreliable OpenRouter)
+let cloudflareWorkerRunning = false;
+async function generateNextArticleCloudflare() {
+    if (!autonomousRunning || !cloudflareWorkerRunning)
+        return;
+    const startTime = Date.now();
+    try {
+        // Get next prioritized keyword (different from the one Copilot is working on)
+        const nextKw = await getNextPrioritizedKeyword();
+        if (!nextKw) {
+            console.log('[Cloudflare AI] No more keywords, pausing...');
+            setTimeout(generateNextArticleCloudflare, 30000);
+            return;
+        }
+        const { keyword, slug, priority, score, category } = nextKw;
+        // Note: Keyword is already locked in keywordsInProgress by getNextPrioritizedKeyword()
+        // Double-check the article doesn't already exist
+        if (await articleExists(slug)) {
+            keywordsInProgress.delete(slug); // Release the lock
+            console.log(`⏭️ [Cloudflare AI] Skipping "${keyword}" - already exists`);
+            slugsCacheTime = 0;
+            setTimeout(generateNextArticleCloudflare, 1000);
+            return;
+        }
+        console.log(`☁️ Cloudflare AI Worker: Generating [${priority.toUpperCase()}] "${keyword}" (score: ${score})`);
+        let result;
+        try {
+            result = await generateWithCloudflareAI_SDK(keyword);
+        }
+        catch (err) {
+            keywordsInProgress.delete(slug); // Release the lock on error
+            console.error(`❌ [Cloudflare AI] Error: ${err.message}`);
+            if (autonomousRunning && cloudflareWorkerRunning) {
+                setTimeout(generateNextArticleCloudflare, 10000);
+            }
+            return;
+        }
+        if (!result.success) {
+            keywordsInProgress.delete(slug); // Release the lock on failure
+            console.error(`❌ [Cloudflare AI] Failed: ${result.error}`);
+            if (autonomousRunning && cloudflareWorkerRunning) {
+                setTimeout(generateNextArticleCloudflare, 10000);
+            }
+            return;
+        }
+        const duration = Date.now() - startTime;
+        // Add to local cache immediately
+        existingArticleSlugs.add(slug);
+        (0, seo_data_1.registerArticleForLinking)(slug, 'petinsurance');
+        // Remove from in-progress (now complete)
+        keywordsInProgress.delete(slug);
+        // Update stats
+        const queueStatus = await getGenerationQueueStatus();
+        stats.generated = queueStatus.generated;
+        stats.pending = queueStatus.remaining;
+        stats.percentComplete = queueStatus.percentComplete;
+        // Store in recent articles
+        const articleData = {
+            keyword,
+            slug,
+            title: result.article.title,
+            wordCount: result.article.wordCount || 3500,
+            date: new Date().toISOString(),
+            deployed: result.deployed || false,
+            liveUrl: result.liveUrl || null,
+            priority,
+            score,
+            category,
+            worker: 'cloudflare'
+        };
+        recentArticles.unshift(articleData);
+        recentArticles = recentArticles.slice(0, 50);
+        const articleSeoScore = result.seoScore || 0;
+        const articleWordCount = result.article.wordCount || 3500;
+        recordArticleGenerated(articleSeoScore, slug);
+        // Log with Cloudflare AI branding - show model used
+        const modelUsed = result.model || 'llama-4-scout-17b-16e-instruct';
+        console.log(`\n${colors.bgCyan}${colors.bold} ☁️ [CLOUDFLARE AI] ${modelUsed} ${colors.reset}`);
+        console.log(`   ${colors.bold}Title:${colors.reset} ${result.article.title}`);
+        console.log(`   ${colors.bold}SEO Score:${colors.reset} ${coloredScore(articleSeoScore)}`);
+        console.log(`   ${colors.bold}Words:${colors.reset} ${articleWordCount}`);
+        console.log(`   ${colors.bold}URL:${colors.reset} ${hyperlink(`https://catsluvus.com/petinsurance/${slug}`)}`);
+        console.log(`   ${colors.dim}(FREE - Cloudflare Workers AI)${colors.reset}\n`);
+        addActivityLog('success', `[Cloudflare AI] Generated: "${result.article.title}" | SEO: ${articleSeoScore}/100`, {
+            keyword,
+            slug,
+            priority,
+            score,
+            seoScore: articleSeoScore,
+            wordCount: articleWordCount,
+            duration,
+            remaining: stats.pending
+        });
+        // DataForSEO On-Page scoring (async, non-blocking, 10s delay for CDN propagation)
+        const cfLiveUrl = `https://catsluvus.com/petinsurance/${slug}`;
+        (0, dataforseo_client_1.getOnPageScoreWithRetry)(cfLiveUrl, 2, 10000).then(dfsScore => {
+            if (dfsScore) {
+                const categorized = (0, dataforseo_client_1.categorizeSEOIssues)(dfsScore.issues);
+                const fixableCount = categorized.fixable.length;
+                const infoCount = categorized.informational.length;
+                console.log(`[DataForSEO] ${slug}: ${dfsScore.overallScore}/100 (${dfsScore.checks.passed} passed, ${dfsScore.checks.failed} failed) | Fixable: ${fixableCount}, Infrastructure: ${infoCount}`);
+                addActivityLog('info', `[DataForSEO] Professional SEO: ${dfsScore.overallScore}/100`, {
+                    keyword,
+                    slug,
+                    dataForSEOScore: dfsScore.overallScore,
+                    passed: dfsScore.checks.passed,
+                    failed: dfsScore.checks.failed,
+                    fixableIssues: categorized.fixable.join(', ') || 'none',
+                    infrastructureIssues: categorized.informational.join(', ') || 'none'
+                });
+            }
+        }).catch(() => { });
+        // Continue immediately
+        if (autonomousRunning && cloudflareWorkerRunning) {
+            setImmediate(generateNextArticleCloudflare);
+        }
+    }
+    catch (error) {
+        console.error('❌ [Cloudflare AI] Error:', error.message);
+        if (autonomousRunning && cloudflareWorkerRunning) {
+            setTimeout(generateNextArticleCloudflare, 10000);
+        }
+    }
+}
+// ═══════════════════════════════════════════════════════════════════════════
+// V3 AUTONOMOUS RESEARCH & GENERATION
+// Fully autonomous pipeline: Research → CategoryContext → Content Generation
+// ═══════════════════════════════════════════════════════════════════════════
+let v3AutonomousRunning = false;
+let v3CategoryContext = null;
+async function runV3AutonomousResearch() {
+    console.log('[SEO-V3] 🚀 Starting autonomous research phase...');
+    addActivityLog('info', '[V3] Starting autonomous research - agent will discover new category');
+    try {
+        const engine = research_engine_1.ResearchEngine.createForResearch();
+        // Phase 1: Niche Discovery
+        console.log('[SEO-V3] Phase 1: Niche Discovery...');
+        const discoveryPrompt = engine.getNicheDiscoveryPrompt({
+            vertical: 'cat/pet',
+            excludeCategories: ['pet insurance', 'cat insurance'],
+            minCPC: 1.0,
+            minVolume: 500
+        });
+        const discoveryResponse = await generateWithCopilotCLI(discoveryPrompt, 300000);
+        const discoveryJson = engine.parseAgentResponse(discoveryResponse);
+        // Handle both object and string formats for selectedNiche
+        const selectedNiche = typeof discoveryJson?.selectedNiche === 'object'
+            ? discoveryJson.selectedNiche?.name || discoveryJson.selectedNiche?.niche || JSON.stringify(discoveryJson.selectedNiche)
+            : discoveryJson?.selectedNiche;
+        if (!selectedNiche) {
+            throw new Error('Agent did not select a niche');
+        }
+        console.log(`[SEO-V3] ✅ Agent selected niche: "${selectedNiche}"`);
+        addActivityLog('info', `[V3] Agent discovered niche: ${selectedNiche}`, {
+            reasoning: discoveryJson.reasoning || discoveryJson.selectedNiche?.reasoning,
+            marketSize: discoveryJson.marketSizeEstimate || discoveryJson.selectedNiche?.marketSize
+        });
+        // Phase 2: Niche Analysis
+        console.log('[SEO-V3] Phase 2: Deep Niche Analysis...');
+        const analysisPrompt = engine.getNicheAnalysisPrompt(selectedNiche, discoveryJson.keywordSeeds || []);
+        const analysisResponse = await generateWithCopilotCLI(analysisPrompt, 300000);
+        const analysisJson = engine.parseAgentResponse(analysisResponse);
+        if (!analysisJson?.keywordClusters) {
+            throw new Error('Agent did not provide keyword clusters');
+        }
+        console.log(`[SEO-V3] ✅ Agent identified ${analysisJson.keywordClusters?.length || 0} keyword clusters`);
+        // Phase 3: Keyword Extraction & Prioritization
+        console.log('[SEO-V3] Phase 3: Keyword Prioritization...');
+        const keywordPrompt = engine.getExtractKeywordsPrompt(selectedNiche, analysisJson.keywordClusters || []);
+        const keywordResponse = await generateWithCopilotCLI(keywordPrompt, 300000);
+        const keywordJson = engine.parseAgentResponse(keywordResponse);
+        // Handle multiple response formats: prioritizedKeywords, keywords, or topKeywords
+        const extractedKeywords = keywordJson?.prioritizedKeywords || keywordJson?.keywords || keywordJson?.topKeywords || [];
+        if (!extractedKeywords || extractedKeywords.length === 0) {
+            console.log('[SEO-V3] ⚠️ No keywords extracted, using fallback keyword list');
+            // Use discovered niche to generate basic keywords as fallback
+        }
+        console.log(`[SEO-V3] ✅ Agent prioritized ${extractedKeywords.length} keywords by revenue potential`);
+        // Build slug from niche name
+        const nicheSlug = selectedNiche.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+        // Build ResearchPhaseOutput
+        const researchOutput = {
+            id: `v3-research-${Date.now()}`,
+            status: 'complete',
+            startedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+            nicheDiscovery: {
+                niche: selectedNiche,
+                reasoning: discoveryJson.reasoning || discoveryJson.selectedNiche?.reasoning || '',
+                marketSize: discoveryJson.marketSizeEstimate || discoveryJson.selectedNiche?.marketSize || '$1B+',
+                growthRate: discoveryJson.growthRate || '10%',
+                competitorCount: discoveryJson.competitorCount || 50
+            },
+            keywordResearch: {
+                totalKeywords: extractedKeywords.length,
+                avgCPC: 2.5,
+                avgVolume: 1000,
+                topKeywords: extractedKeywords.slice(0, 100).map((k, index) => ({
+                    keyword: k.keyword || k.name || k,
+                    slug: (k.keyword || k.name || k).toString().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
+                    volume: k.volume || 1000,
+                    cpc: k.cpc || k.breakdown?.cpcScore || 2.0,
+                    difficulty: k.difficulty || 50,
+                    intent: k.intent || 'informational',
+                    priority: (k.recommendedOrder || index) <= 10 ? 'high' : (k.recommendedOrder || index) <= 30 ? 'medium' : 'low',
+                    status: 'pending'
+                })),
+                clusters: analysisJson.keywordClusters || []
+            },
+            competitorAnalysis: {
+                topCompetitors: [],
+                gaps: analysisJson.competitorGaps || analysisJson.competitorAnalysis?.gaps || [],
+                opportunities: []
+            },
+            monetization: {
+                affiliatePrograms: (analysisJson.affiliatePrograms || []).map((p) => ({
+                    name: p.name || p,
+                    commissionRate: p.commissionRate || 10,
+                    cookieDuration: p.cookieDuration || 30
+                })),
+                adPotential: 'high',
+                revenueProjection: { month1: 500, month6: 3000, month12: 10000 }
+            },
+            targetStructure: {
+                domain: 'catsluvus.com',
+                basePath: `/${nicheSlug}`,
+                slugFormat: `/${nicheSlug}/{keyword-slug}`,
+                sitemapPath: `/${nicheSlug}/sitemap.xml`,
+                kvPrefix: `${nicheSlug}:`
+            }
+        };
+        // Store agent-provided metadata
+        researchOutput.recommendedAuthors = analysisJson.recommendedAuthors || [];
+        researchOutput.growthTrend = analysisJson.nicheAnalysis?.growthTrend || 'stable';
+        researchOutput.competitionLevel = analysisJson.nicheAnalysis?.competitionLevel || 'medium';
+        // Generate CategoryContext
+        const categoryContext = engine.outputCategoryContext(researchOutput, 'catsluvus.com');
+        // Persist to KV
+        await saveResearchToKV(researchOutput, categoryContext);
+        console.log(`[SEO-V3] ✅ Research complete! Category: ${categoryContext.categoryName}`);
+        console.log(`[SEO-V3] 📊 ${categoryContext.keywords.length} keywords ready for generation`);
+        console.log(`[SEO-V3] 🔗 Base path: ${categoryContext.basePath}`);
+        addActivityLog('success', `[V3] Research COMPLETE - ${categoryContext.categoryName}`, {
+            keywords: categoryContext.keywords.length,
+            basePath: categoryContext.basePath,
+            kvPrefix: categoryContext.kvPrefix
+        });
+        return categoryContext;
+    }
+    catch (error) {
+        console.error('[SEO-V3] ❌ Research failed:', error.message);
+        addActivityLog('error', `[V3] Research failed: ${error.message}`);
+        return null;
+    }
+}
+async function generateV3Article(keyword, context) {
+    try {
+        console.log(`[SEO-V3] 📝 Generating: "${keyword.keyword}"`);
+        addActivityLog('generating', `[V3] Generating: "${keyword.keyword}"`, {
+            keyword: keyword.keyword,
+            priority: keyword.priority || 'medium',
+            slug: keyword.slug
+        });
+        const slug = keyword.slug;
+        // 1. SERP Analysis - Analyze what's ranking #1-10 to beat competitors
+        updateSessionStage(keyword.keyword, '1/7: SERP Analysis');
+        console.log(`[SEO-V3] [Step 1/7] SERP analysis for: "${keyword.keyword}"`);
+        const serpAnalysis = await analyzeSERP(keyword.keyword);
+        console.log(`[SEO-V3] [Step 1/7] ✓ SERP complete (${serpAnalysis.topResults.length} results)`);
+        // Build SERP insights for the prompt
+        const competitorHeadingsText = serpAnalysis.competitorHeadings.length > 0
+            ? `\nCompetitor H2/H3 headings (COVER ALL): ${serpAnalysis.competitorHeadings.slice(0, 12).join(' | ')}`
+            : '';
+        const competitorFAQsText = serpAnalysis.competitorFAQs.length > 0
+            ? `\nCompetitor FAQ questions (ANSWER ALL): ${serpAnalysis.competitorFAQs.slice(0, 8).join(' | ')}`
+            : '';
+        const competitorEntitiesText = serpAnalysis.competitorEntities?.length > 0
+            ? `\nKey entities/brands to reference: ${serpAnalysis.competitorEntities.slice(0, 10).join(', ')}`
+            : '';
+        const serpInsights = serpAnalysis.topResults.length > 0
+            ? `\n\nCOMPETITOR ANALYSIS (Top 10 Google results):
+Top-ranking titles: ${serpAnalysis.topResults.slice(0, 5).map(r => `"${r.title}"`).join(', ')}
+Topics ALL competitors cover: ${serpAnalysis.commonTopics.join(', ')}${competitorHeadingsText}${competitorFAQsText}${competitorEntitiesText}
+Content gaps to exploit: ${serpAnalysis.contentGaps.join(', ')}
+Target word count: ${serpAnalysis.targetWordCount}+ words\n`
+            : '';
+        // 2. Fetch People Also Ask questions
+        updateSessionStage(keyword.keyword, '2/7: People Also Ask');
+        console.log(`[SEO-V3] [Step 2/7] Fetching PAA questions...`);
+        const paaQuestions = await fetchPAAQuestions(keyword.keyword);
+        console.log(`[SEO-V3] [Step 2/7] ✓ PAA complete (${paaQuestions.length} questions)`);
+        const paaQuestionsText = paaQuestions.length > 0
+            ? `\n\nPEOPLE ALSO ASK (Use as FAQs):\n${paaQuestions.map((q, i) => `${i + 1}. ${q.question}`).join('\n')}\n`
+            : '';
+        // 3. Get existing articles for internal linking (BOTH same-category AND cross-category)
+        updateSessionStage(keyword.keyword, '3/7: Internal Linking');
+        console.log(`[SEO-V3] [Step 3/7] Fetching existing article slugs...`);
+        const existingSlugs = await fetchExistingArticleSlugsForCategory(context.kvPrefix);
+        console.log(`[SEO-V3] [Step 3/7] ✓ Found ${existingSlugs.length} same-category articles`);
+        // Fetch cross-category articles (from all V3 categories in KV) with full URLs
+        const crossCategoryUrls = await fetchCrossCategoryArticlesForLinking(context.kvPrefix);
+        console.log(`[SEO-V3] [Step 3/7] ✓ Found ${crossCategoryUrls.length} cross-category articles for linking`);
+        // Combine: same-category slugs (convert to full URLs) + cross-category URLs
+        // Normalize basePath to ensure proper URL format: /category/ (with trailing slash)
+        let categoryPath = context.basePath || `/${context.kvPrefix.replace(/:$/, '')}/`;
+        // Ensure categoryPath ends with exactly one slash
+        if (!categoryPath.endsWith('/'))
+            categoryPath += '/';
+        if (!categoryPath.startsWith('/'))
+            categoryPath = '/' + categoryPath;
+        const sameCategoryUrls = existingSlugs.slice(0, 20).map(slug => `${categoryPath}${slug}`);
+        const allArticleUrls = [...sameCategoryUrls, ...crossCategoryUrls.slice(0, 30)];
+        const existingArticlesList = allArticleUrls.join('\n');
+        // 4. Fetch real Amazon products for comparison table
+        updateSessionStage(keyword.keyword, '4/7: Amazon Products');
+        console.log(`[SEO-V3] [Step 4/8] Fetching Amazon products...`);
+        const amazonProducts = await fetchAmazonProductsForKeyword(keyword.keyword, 'Pet Supplies');
+        console.log(`[SEO-V3] [Step 4/8] ✓ Amazon: ${amazonProducts.products.length} products found`);
+        // 5. Get category-specific content data (brands, authors, FAQs, etc.)
+        const categorySlug = context.categorySlug || context.niche || 'DEFAULT';
+        const categoryContent = getCategoryContentData(categorySlug);
+        console.log(`[SEO-V3] Using category content for: ${categorySlug}`);
+        // 5. Build category-specific comparison table based on context entities or category defaults
+        const contextEntities = context.entities || [];
+        const comparisonBrands = contextEntities.length > 0
+            ? contextEntities.slice(0, 5).map(e => e.name).join(', ')
+            : categoryContent.brands.join(', ');
+        // 6. Build author info from context or category defaults
+        const contextAuthors = context.authors || [];
+        const expertAuthor = contextAuthors[0] || categoryContent.author;
+        // 7. Build dynamic JSON template examples from category content
+        const categoryImageExamples = categoryContent.imageAltTemplates.map((alt, i) => `{"url": "https://images.unsplash.com/photo-category-${i + 1}?w=800&q=80", "alt": "${alt.replace('{keyword}', keyword.keyword)}", "caption": "${categoryContent.imageCaptions[i] || 'Expert guide image.'}"}`).join(',\n    ');
+        // Build comparison example with REAL Amazon products (if available) or instructions
+        const amazonAffiliateTag = process.env.AMAZON_AFFILIATE_TAG || 'catsluvus03-20';
+        let categoryComparisonExample;
+        let amazonProductsPromptText = '';
+        if (amazonProducts.products.length > 0) {
+            // We have real Amazon products - use them directly
+            amazonProductsPromptText = amazonProducts.promptText;
+            categoryComparisonExample = `{
+    "headers": ["Product Name", "Price", "Key Features", "Rating", "Amazon Search"],
+    "rows": [
+${amazonProducts.comparisonRows.map(row => `      ${JSON.stringify(row)}`).join(',\n')}
+    ]
+  }
+
+USE THESE EXACT PRODUCTS - They are REAL Amazon products with verified data.`;
+        }
+        else {
+            // No Amazon API products - instruct AI to use REAL products from its knowledge
+            // Build category-specific product examples based on the keyword/category
+            const categoryExamples = getCategoryProductExamples(categorySlug, keyword.keyword);
+            categoryComparisonExample = `{
+    "headers": ["Product Name", "Price", "Key Features", "Rating", "Amazon Search"],
+    "rows": [
+      // YOU MUST USE REAL PRODUCTS - see examples below for this category
+    ]
+  }
+
+**MANDATORY: USE REAL PRODUCTS FROM YOUR KNOWLEDGE**
+
+You are an expert who knows real products sold on Amazon. For "${keyword.keyword}", use ACTUAL products that exist and are sold on Amazon.
+
+${categoryExamples}
+
+STRICT REQUIREMENTS:
+1. Use the EXACT brand and product names (e.g., "Sherpa Original Deluxe Carrier" NOT "Top Brand 1")
+2. Use realistic prices based on your knowledge (e.g., "$45.99" NOT "$XX.XX")
+3. Include real features specific to each product
+4. The "Amazon Search" column = product name with + instead of spaces (e.g., "Sherpa+Original+Deluxe+Carrier")
+5. Include exactly 3 products that are actually available on Amazon
+
+**FAILURE MODE - DO NOT DO THIS:**
+- "Top Brand 1", "Top Brand 2" = REJECTED
+- "Brand A", "Brand B" = REJECTED
+- "Product 1", "Product 2" = REJECTED
+- Generic placeholder names = REJECTED
+
+**SUCCESS MODE - DO THIS:**
+- "Sherpa Original Deluxe Pet Carrier" = CORRECT
+- "Litter-Robot 4" = CORRECT
+- "Feliway Classic Diffuser" = CORRECT
+- Actual product names you know exist = CORRECT`;
+        }
+        const categoryFaqExamples = categoryContent.faqTemplates.slice(0, 8).map(faq => `{"question": "${faq.question.replace('{keyword}', keyword.keyword)}", "answer": "${faq.answerHint}, then 150+ word expansion"}`).join(',\n    ');
+        const categoryExternalLinkExamples = categoryContent.externalLinks.map(link => `{"url": "${link.url}", "text": "${link.text}", "context": "${link.context}"}`).join(',\n    ');
+        // 8. Full SEO-optimized prompt matching V1 quality with DYNAMIC category content
+        const prompt = `You are an expert SEO content writer for ${context.categoryName}. Generate an SEO article about "${keyword.keyword}" optimized for Google Featured Snippets.
+${serpInsights}
+${paaQuestionsText}${amazonProductsPromptText}
+TARGET SITE: https://${context.domain}${context.basePath}
+EXPERT AUTHOR: ${expertAuthor.name}, ${expertAuthor.title} (${expertAuthor.credentials})
+
+Requirements:
+- 3000+ words comprehensive content
+- Use "${keyword.keyword}" naturally 8-12 times
+- Include 8+ detailed FAQs with 150+ word answers
+- Include expert quotes and real pricing/data
+- Write in authoritative, trustworthy tone
+- Include 3-5 external authority links to veterinary sites, manufacturer sites, research journals
+
+INTERNAL LINKING (MANDATORY - REQUIRED FOR SEO SCORE):
+**YOU MUST INCLUDE 8-12 INTERNAL LINKS** in the "internalLinks" array. This is NOT optional.
+Pick 8-12 URLs from this list and create contextual anchor text for each:
+${existingArticlesList || 'No existing articles yet - focus on external authority links'}
+
+INTERNAL LINK RULES (REQUIRED):
+- Pick EXACTLY 8-12 URLs from the list above
+- Use descriptive anchor text (NOT "click here" or generic text)
+- Each link needs: url (copy exactly from list), anchorText, context
+- Mix same-category and cross-category links for topical authority
+- FAILURE TO INCLUDE internalLinks ARRAY = ARTICLE REJECTED
+
+STRICT SEO REQUIREMENTS FOR 100/100 SCORE (CRITICAL):
+**TITLE: NATURALLY CONCISE, MAX 55 CHARACTERS**
+- Write a punchy, complete title that naturally fits within 55 characters
+- NEVER use "..." or truncated-looking endings
+- Use concise phrasing: "Top Picks" not "Complete Comprehensive Guide"
+- Pattern: "[Topic]: [Value Prop] [Year]" e.g., "Cat Food Delivery: Best Brands 2026" (36 chars)
+- Count characters BEFORE outputting to ensure it fits
+- GOOD: "Cat DNA Tests: Top 5 Kits Compared 2026" (40 chars)
+- BAD: "The Complete Ultimate Guide to Cat DNA Testing Services & Everything..." (truncated)
+
+**META DESCRIPTION: EXACTLY 145-155 CHARACTERS (not 156+, not 144-)**
+- Count EVERY character before outputting
+- Include primary keyword naturally once
+- Include call-to-action (Discover, Compare, Learn, Find)
+
+**KEYWORD DENSITY: 1.0-1.5%** (For 3000 words = use keyword 30-45 times evenly)
+
+**HEADINGS: 4-8 unique H2s** - No duplicate text, keyword in 2+ H2s
+
+**LINKS: 8-12 internal links (REQUIRED in internalLinks array) + 2-3 external authority links**
+
+AEO (ANSWER ENGINE OPTIMIZATION) - For Featured Snippets & Voice Search:
+- **Quick Answer Box**: First 40-60 words MUST directly answer the main query (appears in "quickAnswer")
+- **Definition Pattern**: Start key sections with "X is..." or "X refers to..." for definition snippets
+- **List Snippets**: Use numbered steps for "how to" content, bullet points for "best X" content
+- **Table Snippets**: Comparison tables trigger rich snippets - include clear headers and data
+- **FAQ Optimization**: Each FAQ answer should start with a direct 1-sentence answer, then expand
+- **Voice Search Ready**: Write answers that sound natural when read aloud by voice assistants
+
+GEO (GENERATIVE ENGINE OPTIMIZATION) - For AI Search Engines (ChatGPT, Perplexity, Claude):
+- **Entity Definitions**: Clearly define key terms so AI can cite you: "A [term] is [definition]..."
+- **Factual Statements**: Include specific facts, statistics, and data points AI can reference
+- **Source Attribution**: Mention studies, experts, and authoritative sources by name
+- **E-E-A-T Signals**: Include author expertise, first-hand experience, and trust indicators
+- **Structured Knowledge**: Use consistent formatting so AI can extract structured information
+- **Citation-Worthy Content**: Write statements that AI would want to cite as a source
+- **Semantic Clarity**: Avoid ambiguity - be precise about what, who, when, where, why, how
+
+AI WRITING DETECTION AVOIDANCE:
+- NEVER use em dashes (—). Use commas, colons, or parentheses.
+- AVOID: delve, leverage, utilize, foster, bolster, underscore, unveil, navigate, streamline, enhance
+- AVOID: robust, comprehensive, pivotal, crucial, vital, transformative, cutting-edge, groundbreaking
+- AVOID phrases: "In today's fast-paced world", "It's important to note", "Let's delve into"
+- Use varied sentence lengths and natural conversational tone
+- Write like a human expert, not an AI
+
+Return ONLY valid JSON:
+{
+  "title": "[CONCISE, ≤55 chars, no truncation] Punchy title with '${keyword.keyword}'",
+  "metaDescription": "[MAX 155 CHARS] Description with '${keyword.keyword}'",
+  "quickAnswer": "40-60 word direct answer for Featured Snippet Position 0 - START with the answer, not context",
+  "definitionSnippet": "One clear sentence: '[Topic] is/refers to [definition]...' for AI citation and definition snippets",
+  "keyFacts": [
+    "Specific fact 1 with number/statistic that AI can cite",
+    "Specific fact 2 with data point or research finding",
+    "Specific fact 3 with expert consensus or study result"
+  ],
+  "keyTakeaways": ["5 key points, 15-25 words each"],
+  "images": [
+    ${categoryImageExamples}
+  ],
+  "introduction": "400+ words introducing ${context.categoryName} and this topic",
+  "sections": [
+    {"heading": "UNIQUE H2 about how ${keyword.keyword} works", "content": "500+ words"},
+    {"heading": "DIFFERENT H2 about comparing options", "content": "500+ words"},
+    {"heading": "DISTINCT H2 about costs and value", "content": "500+ words"},
+    {"heading": "SEPARATE H2 about benefits and features", "content": "500+ words"}
+  ],
+  "faqs": [
+    ${categoryFaqExamples}
+  ],
+  "conclusion": "300+ words summarizing key points with call to action",
+  "externalLinks": [
+    ${categoryExternalLinkExamples}
+  ],
+  "internalLinks": [
+    {"url": "/cat-carriers-travel-products/expandable-cat-carrier", "anchorText": "expandable cat carriers", "context": "For travel, consider expandable cat carriers that provide extra space."},
+    {"url": "/cat-dna-testing/best-cat-dna-test", "anchorText": "cat DNA testing", "context": "Understanding your cat's breed through cat DNA testing helps choose the right products."},
+    {"url": "/cat-trees-furniture/modern-cat-tree", "anchorText": "modern cat furniture", "context": "Pair your purchase with modern cat furniture for complete home setup."},
+    {"url": "/cat-boarding/luxury-cat-boarding", "anchorText": "luxury cat boarding", "context": "When traveling without your cat, luxury cat boarding ensures their comfort."}
+  ],
+  "wordCount": 3500
+}`;
+        // 7. Generate with Cloudflare AI (FREE - keeps Copilot for discovery/keywords only)
+        updateSessionStage(keyword.keyword, '5/7: AI Generation');
+        console.log(`[SEO-V3] [Step 4/7] Building prompt (${prompt.length} chars)...`);
+        console.log(`[SEO-V3] [Step 5/7] Calling Cloudflare AI for "${keyword.keyword}"...`);
+        // FIX: Increased timeout from 2min to 5min, fixed response type check
+        const aiResult = await (0, cloudflare_ai_client_1.generateWithCloudflareAI)(prompt, { timeout: 300000 });
+        if (!aiResult || !aiResult.content) {
+            throw new Error(`Cloudflare AI failed: No content returned`);
+        }
+        const response = aiResult.content;
+        console.log(`[SEO-V3] [Step 5/7] ✓ Cloudflare AI response received (${response.length} chars)`);
+        // 8. Parse JSON response
+        const jsonMatch = response.match(/\{[\s\S]*"title"[\s\S]*\}/);
+        if (!jsonMatch) {
+            throw new Error('No article JSON in response');
+        }
+        const sanitizedJson = jsonMatch[0]
+            .replace(/[\x00-\x1F\x7F]/g, (char) => {
+            if (char === '\n')
+                return '\\n';
+            if (char === '\r')
+                return '\\r';
+            if (char === '\t')
+                return '\\t';
+            return '';
+        });
+        let article;
+        try {
+            article = JSON.parse(sanitizedJson);
+        }
+        catch (jsonErr) {
+            const cleaned = sanitizedJson
+                .replace(/\\n/g, ' ')
+                .replace(/\\r/g, '')
+                .replace(/\\t/g, ' ')
+                .replace(/,\s*}/g, '}')
+                .replace(/,\s*]/g, ']');
+            article = JSON.parse(cleaned);
+        }
+        if (!article.title) {
+            throw new Error('Invalid article JSON - missing title');
+        }
+        // 9. Enforce SEO limits - truncate title and meta description
+        const seoLimits = (0, seo_data_1.enforceSEOLimits)(article);
+        article.title = seoLimits.title;
+        article.metaDescription = seoLimits.metaDescription;
+        // 9.5 AUTO-GENERATE COMPARISON TABLE from Amazon Creators API (single source of truth)
+        if (!article.comparisonTable || !article.comparisonTable.rows?.length) {
+            if (amazonProducts.products.length > 0) {
+                article.comparisonTable = {
+                    headers: ['Product Name', 'Price', 'Key Features', 'Rating', 'Amazon Search'],
+                    rows: amazonProducts.comparisonRows
+                };
+                console.log(`[SEO-V3] ✓ Comparison table from ${amazonProducts.products.length} Amazon products`);
+            }
+            else {
+                const categorySlugForTable = context.categorySlug || context.niche?.replace(/\s+/g, '-').toLowerCase() || 'DEFAULT';
+                const fallbackTable = buildFallbackComparisonTable(categorySlugForTable, keyword.keyword);
+                article.comparisonTable = fallbackTable;
+                console.log(`[SEO-V3] ✓ Comparison table from category fallback (${fallbackTable.rows.length} products for ${categorySlugForTable})`);
+            }
+        }
+        // 10. Search for relevant YouTube video using 5-level funnel
+        // See .github/skills/video-search-funnel/SKILL.md for specification
+        let video;
+        try {
+            const categorySlugForVideo = context.categorySlug || context.niche?.replace(/\s+/g, '-').toLowerCase() || 'cat-content';
+            console.log(`[SEO-V3] 🎬 Starting video funnel for category: ${categorySlugForVideo}`);
+            const funnelResult = await searchVideoFunnel(keyword.keyword, categorySlugForVideo);
+            if (funnelResult.video) {
+                video = funnelResult.video;
+                const levelDesc = funnelResult.fallbackUsed ? 'funny cat fallback' : `level ${funnelResult.level}`;
+                console.log(`[SEO-V3] ✅ Video found (${levelDesc}): "${video.title}" by ${video.channel}`);
+            }
+            else {
+                console.log(`[SEO-V3] ⚠️ No video found after all funnel levels`);
+            }
+        }
+        catch (err) {
+            console.log(`[SEO-V3] ⚠️ Video funnel error: ${err.message}`);
+        }
+        // 10b. Generate AI images for article sections (using FLUX.1 schnell)
+        let generatedImages = [];
+        try {
+            // Sanitize category slug: remove special chars like & to match URL path format
+            const rawCategory = context.categorySlug || context.niche || 'cat-content';
+            const categorySlug = rawCategory.toLowerCase()
+                .replace(/&amp;/g, '') // Remove HTML entities
+                .replace(/&/g, '') // Remove raw ampersands
+                .replace(/[^a-z0-9]+/g, '-') // Replace non-alphanumeric with hyphens
+                .replace(/(^-|-$)/g, '') // Trim leading/trailing hyphens
+                .replace(/-+/g, '-'); // Collapse multiple hyphens
+            // Wrap addActivityLog to accept string type
+            const logWrapper = (level, message, data) => {
+                const validTypes = ['info', 'success', 'error', 'generating', 'deployed', 'queue', 'warning'];
+                const type = validTypes.includes(level) ? level : 'info';
+                addActivityLog(type, message, data);
+            };
+            const imageResult = await (0, cloudflare_image_gen_1.generateArticleImages)(categorySlug, slug, keyword.keyword, article.title, article.sections || [], logWrapper);
+            if (imageResult.success) {
+                generatedImages = imageResult.images;
+                console.log(`[SEO-V3] 🖼️ Generated ${generatedImages.length} AI images (${imageResult.neuronsCost} neurons)`);
+            }
+            else if (imageResult.errors.length > 0) {
+                console.log(`[SEO-V3] ⚠️ Image generation issues: ${imageResult.errors.join(', ')}`);
+            }
+        }
+        catch (err) {
+            // Image generation is optional - fallback to Unsplash URLs in article.images
+            console.log(`[SEO-V3] ⚠️ AI image generation skipped: ${err.message}`);
+        }
+        // 11. Build full HTML with schema markup (use V3-specific template)
+        const html = buildArticleHtml(article, slug, keyword.keyword, context, video, generatedImages, amazonProducts);
+        // 12. Calculate SEO score
+        const seoScore = await calculateSEOScore(html, keyword.keyword, article.title, article.metaDescription);
+        console.log(`[SEO-V3] 📊 SEO Score: ${seoScore.score}/100`);
+        addActivityLog('info', `[V3] SEO Score: ${seoScore.score}/100 for "${keyword.keyword}"`, {
+            keyword: keyword.keyword,
+            seoScore: seoScore.score
+        });
+        // 12b. Quality gate - skip deployment for low-quality articles (below 60/100)
+        const MIN_SEO_SCORE = 60;
+        if (seoScore.score < MIN_SEO_SCORE) {
+            console.log(`[SEO-V3] ⚠️ Skipping deployment - SEO score ${seoScore.score} below minimum ${MIN_SEO_SCORE}`);
+            addActivityLog('warning', `[V3] Low SEO score: ${article.title}`, {
+                keyword: keyword.keyword,
+                seoScore: seoScore.score,
+                reason: 'Below minimum quality threshold'
+            });
+            return false;
+        }
+        // 13. Deploy to KV with V3 prefix (only if SEO score passes threshold)
+        updateSessionStage(keyword.keyword, '6/7: Deploying to KV');
+        console.log(`[SEO-V3] [Step 6/7] Deploying to Cloudflare KV...`);
+        const derivedSlugForKv = context?.categorySlug || 'v3-articles';
+        const safeKvPrefix = context?.kvPrefix || `${derivedSlugForKv}:`;
+        const kvKey = `${safeKvPrefix}${slug}`;
+        const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+        if (cfApiToken) {
+            const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(kvKey)}`;
+            await fetch(url, {
+                method: 'PUT',
+                headers: { 'Authorization': `Bearer ${cfApiToken}`, 'Content-Type': 'text/html' },
+                body: html
+            });
+            console.log(`[SEO-V3] [Step 6/7] ✓ Deployed: ${kvKey}`);
+            const v3Category = safeKvPrefix.replace(':', '').replace(/-/g, '-') || 'cat-trees-condos';
+            (0, seo_data_1.registerArticleForLinking)(slug, v3Category);
+            // Notify IndexNow for instant indexing
+            const articleUrl = `https://${context.domain}${context.basePath}/${slug}`;
+            (0, seo_data_1.notifyIndexNow)(articleUrl);
+            addActivityLog('deployed', `[V3] Deployed: ${article.title}`, {
+                keyword: keyword.keyword,
+                slug: slug,
+                seoScore: seoScore.score,
+                url: articleUrl
+            });
+            // POST-DEPLOY VERIFICATION: Confirm article is accessible (no 404)
+            // Use the actual domain from context for verification
+            const verifyDomain = context?.domain || 'catsluvus.com';
+            const verifyBasePath = context?.basePath || '/cat-dna-testing';
+            const verifyUrl = `https://${verifyDomain}${verifyBasePath}/${slug}`;
+            let verificationPassed = false;
+            let retryCount = 0;
+            const maxRetries = 3;
+            while (!verificationPassed && retryCount < maxRetries) {
+                // Wait 2 seconds for KV propagation before checking
+                await new Promise(r => setTimeout(r, 2000));
+                try {
+                    const verifyResponse = await fetch(verifyUrl, {
+                        method: 'HEAD',
+                        headers: { 'User-Agent': 'SEO-V3-Verification-Bot/1.0' }
+                    });
+                    if (verifyResponse.status === 200) {
+                        console.log(`[SEO-V3] ✓ URL Verified: ${verifyUrl} (HTTP ${verifyResponse.status})`);
+                        verificationPassed = true;
+                    }
+                    else if (verifyResponse.status === 404) {
+                        retryCount++;
+                        console.log(`[SEO-V3] ⚠️ 404 detected for ${verifyUrl} - retry ${retryCount}/${maxRetries}`);
+                        if (retryCount < maxRetries) {
+                            // Re-deploy to KV
+                            console.log(`[SEO-V3] Re-deploying to KV...`);
+                            await fetch(url, {
+                                method: 'PUT',
+                                headers: { 'Authorization': `Bearer ${cfApiToken}`, 'Content-Type': 'text/html' },
+                                body: html
+                            });
+                        }
+                    }
+                    else {
+                        console.log(`[SEO-V3] ⚠️ Unexpected status ${verifyResponse.status} for ${verifyUrl}`);
+                        verificationPassed = true; // Don't retry on non-404 errors
+                    }
+                }
+                catch (verifyError) {
+                    console.log(`[SEO-V3] ⚠️ Verification fetch failed: ${verifyError.message}`);
+                    retryCount++;
+                }
+            }
+            if (!verificationPassed) {
+                console.error(`[SEO-V3] ❌ URL verification FAILED after ${maxRetries} retries: ${verifyUrl}`);
+                addActivityLog('error', `[V3] URL still 404 after retries: ${slug}`, {
+                    url: verifyUrl,
+                    kvKey: kvKey,
+                    retries: maxRetries
+                });
+            }
+        }
+        else {
+            console.log(`[SEO-V3] [Step 6/7] ⚠️ No Cloudflare API token - skipping deployment`);
+        }
+        // 14. Update V3 sitemap
+        updateSessionStage(keyword.keyword, '7/7: Updating Sitemap');
+        console.log(`[SEO-V3] [Step 7/7] Updating sitemap...`);
+        await updateSitemap(slug, context);
+        console.log(`[SEO-V3] [Step 7/7] ✓ Sitemap updated`);
+        const safeDomain = context?.domain || 'catsluvus.com';
+        const derivedSlugForUrl = context?.categorySlug || 'v3-articles';
+        const safeBasePath = context?.basePath || `/${derivedSlugForUrl}`;
+        const safeKvPrefixForOptimize = context?.kvPrefix || `${derivedSlugForUrl}:`;
+        const articleUrl = `https://${safeDomain}${safeBasePath}/${slug}`;
+        // 15. Queue PageSpeed analysis with rate limiting (90s min interval, exponential backoff for 429s)
+        queuePageSpeedCheck({
+            url: articleUrl,
+            strategy: 'mobile',
+            articleSlug: slug,
+            originalHtml: html,
+            kvKey: `${safeKvPrefixForOptimize}${slug}`,
+            context: context
+        });
+        console.log(`[SEO-V3] ✅ SUCCESS: "${article.title}" | SEO: ${seoScore.score}/100 | URL: ${articleUrl}`);
+        addActivityLog('success', `[V3] Generated: ${article.title}`, {
+            keyword: keyword.keyword,
+            slug: slug,
+            url: articleUrl,
+            seoScore: seoScore.score
+        });
+        // Update session health with actual SEO score
+        sessionHealth.totalSeoScore += seoScore.score;
+        sessionHealth.seoScoreCount++;
+        return true;
+    }
+    catch (error) {
+        console.error(`[SEO-V3] ❌ FAILED: "${keyword.keyword}" - ${error.message}`);
+        console.error(`[SEO-V3] Stack:`, error.stack?.split('\n').slice(0, 5).join('\n'));
+        addActivityLog('error', `[V3] Generation failed: ${keyword.keyword}`, { error: error.message });
+        return false;
+    }
+}
+async function getAllCategoryStatusKeys() {
+    // Dynamic KV query - no hardcoded categories
+    // See .github/skills/category-discovery/SKILL.md for discovery standards
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken)
+        return [];
+    const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/keys?prefix=${CATEGORY_STATUS_PREFIX}`;
+    try {
+        const res = await fetch(url, { headers: { 'Authorization': `Bearer ${cfApiToken}` } });
+        if (!res.ok)
+            return [];
+        const data = await res.json();
+        return (data.result || []).map((key) => key.name.replace(CATEGORY_STATUS_PREFIX, ''));
+    }
+    catch (error) {
+        console.error(`[SEO-V3] ❌ Failed to list category status keys: ${error.message}`);
+        return [];
+    }
+}
+async function runV3AutonomousGeneration() {
+    if (!v3CategoryContext) {
+        console.log('[SEO-V3] 🔍 No active context - checking for in-progress categories...');
+        // Step 1: Dynamically query KV for all category statuses (no hardcoded list)
+        const allCategories = await getAllCategoryStatusKeys();
+        let foundInProgress = null;
+        console.log(`[SEO-V3] Found ${allCategories.length} categories in KV to check...`);
+        for (const cat of allCategories) {
+            try {
+                const status = await getCategoryStatus(cat);
+                console.log(`[SEO-V3] Category ${cat}: status=${status?.status || 'not found'}`);
+                if (status && status.status === 'in_progress') {
+                    foundInProgress = cat;
+                    console.log(`[SEO-V3] ✅ Found in-progress category: ${cat}`);
+                    break;
+                }
+            }
+            catch (err) {
+                console.log(`[SEO-V3] ⚠️ Error checking ${cat}: ${err.message}`);
+            }
+        }
+        console.log(`[SEO-V3] Category check complete. Found in-progress: ${foundInProgress || 'none'}`);
+        if (foundInProgress) {
+            // Load context for in-progress category
+            console.log(`[SEO-V3] Loading context for: ${foundInProgress}:`);
+            const saved = await loadResearchFromKV(`${foundInProgress}:`);
+            if (saved.categoryContext && saved.categoryContext.keywords?.length > 0) {
+                const pendingCount = saved.categoryContext.keywords.filter(k => k.status === 'pending').length;
+                console.log(`[SEO-V3] ✅ Loaded ${saved.categoryContext.niche}: ${pendingCount}/${saved.categoryContext.keywords.length} pending`);
+                v3CategoryContext = saved.categoryContext;
+                // CRITICAL FIX: Sync categoryName with niche to fix breadcrumbs
+                if (v3CategoryContext.niche && v3CategoryContext.categoryName !== v3CategoryContext.niche) {
+                    console.log(`[SEO-V3] 🔧 Syncing categoryName: "${v3CategoryContext.categoryName}" → "${v3CategoryContext.niche}"`);
+                    v3CategoryContext.categoryName = v3CategoryContext.niche;
+                }
+                // Ensure Worker Route
+                await ensureWorkerRouteForCategory(foundInProgress);
+            }
+            else {
+                // Category is in_progress in KV but has no saved context (keyword gen may have failed)
+                // Regenerate keywords for this category instead of discovering a new one
+                console.log(`[SEO-V3] ⚠️ No saved context for ${foundInProgress}, regenerating keywords...`);
+                addActivityLog('info', `[V3] Recovering in-progress category: ${foundInProgress}`);
+                const categoryName = foundInProgress.split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                const recovered = {
+                    name: categoryName,
+                    slug: foundInProgress,
+                    estimatedKeywords: 25,
+                    affiliatePotential: 'high',
+                    reasoning: 'Recovered in-progress category (context was lost)'
+                };
+                await ensureWorkerRouteForCategory(foundInProgress);
+                let keywords = await generateCategoryKeywords(recovered);
+                if (keywords.length < 5) {
+                    const baseName = categoryName.toLowerCase();
+                    const fallbackKeywords = [
+                        `best ${baseName}`, `top ${baseName} reviews`, `${baseName} buying guide`,
+                        `affordable ${baseName}`, `${baseName} for indoor cats`, `${baseName} for kittens`,
+                        `${baseName} comparison`, `luxury ${baseName}`, `${baseName} on amazon`,
+                        `how to choose ${baseName}`, `${baseName} for senior cats`, `${baseName} for multiple cats`,
+                        `${baseName} recommendations`, `${baseName} under 50 dollars`, `${baseName} for small spaces`,
+                        `diy ${baseName}`, `${baseName} pros and cons`, `${baseName} for anxious cats`,
+                        `most popular ${baseName}`, `${baseName} worth buying`
+                    ];
+                    keywords = [...new Set([...keywords, ...fallbackKeywords])];
+                }
+                v3CategoryContext = (0, category_context_1.createEmptyCategoryContext)(foundInProgress, 'catsluvus.com', `/${foundInProgress}`);
+                v3CategoryContext.niche = categoryName;
+                v3CategoryContext.categoryName = categoryName;
+                v3CategoryContext.keywords = keywords.map((kw) => ({
+                    keyword: kw,
+                    slug: kw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+                    priority: 'medium',
+                    score: 50,
+                    status: 'pending',
+                    cpc: 0,
+                    volume: 0,
+                    difficulty: 0,
+                    intent: 'informational'
+                }));
+                await saveCategoryStatus(foundInProgress, {
+                    category: foundInProgress,
+                    status: 'in_progress',
+                    articleCount: 0,
+                    expectedCount: keywords.length,
+                    avgSeoScore: 0,
+                    startedAt: new Date().toISOString()
+                });
+                await saveResearchToKV({
+                    researchPhase: 'generation',
+                    selectedNiche: categoryName,
+                    keywords: v3CategoryContext.keywords,
+                    startedAt: v3CategoryContext.createdAt
+                }, v3CategoryContext);
+                console.log(`[SEO-V3] ✅ Recovered ${foundInProgress} with ${keywords.length} keywords`);
+                addActivityLog('success', `[V3] Recovered category: ${categoryName} (${keywords.length} keywords)`);
+            }
+        }
+        // Step 2: If no in-progress category, discover next one
+        if (!foundInProgress || !v3CategoryContext) {
+            console.log('[SEO-V3] 🔄 No in-progress category found - calling discoverNextCategory()...');
+            addActivityLog('info', '[V3] Starting category discovery...');
+            try {
+                console.log('[SEO-V3] Calling discoverNextCategory()...');
+                const nextCategory = await discoverNextCategory();
+                console.log(`[SEO-V3] discoverNextCategory returned: ${JSON.stringify(nextCategory)}`);
+                if (nextCategory) {
+                    console.log(`[SEO-V3] ✅ Discovered: ${nextCategory.name} (${nextCategory.slug})`);
+                    addActivityLog('info', `[V3] Discovered next category: ${nextCategory.name}`);
+                    // IMMEDIATELY save in_progress status to KV so retries find this category
+                    let kvSaved = await saveCategoryStatus(nextCategory.slug, {
+                        category: nextCategory.slug,
+                        status: 'in_progress',
+                        articleCount: 0,
+                        expectedCount: 0,
+                        avgSeoScore: 0,
+                        startedAt: new Date().toISOString()
+                    });
+                    if (!kvSaved) {
+                        // Retry once after 2s - this save is critical to prevent re-discovery loops
+                        console.log(`[SEO-V3] ⚠️ KV save failed for ${nextCategory.slug}, retrying in 2s...`);
+                        await new Promise(r => setTimeout(r, 2000));
+                        kvSaved = await saveCategoryStatus(nextCategory.slug, {
+                            category: nextCategory.slug,
+                            status: 'in_progress',
+                            articleCount: 0,
+                            expectedCount: 0,
+                            avgSeoScore: 0,
+                            startedAt: new Date().toISOString()
+                        });
+                        if (!kvSaved) {
+                            console.error(`[SEO-V3] ❌ CRITICAL: Could not save ${nextCategory.slug} to KV after retry - will cause re-discovery loop!`);
+                        }
+                    }
+                    // Create Worker routes
+                    await ensureWorkerRouteForCategory(nextCategory.slug);
+                    // Generate keywords via Copilot CLI
+                    let keywords = await generateCategoryKeywords(nextCategory);
+                    console.log(`[SEO-V3] Copilot returned ${keywords.length} keywords for ${nextCategory.name}`);
+                    // Fallback: generate basic keywords from category name if Copilot fails
+                    if (keywords.length < 5) {
+                        console.log(`[SEO-V3] ⚠️ Copilot keywords insufficient (${keywords.length}), using fallback generator`);
+                        addActivityLog('warning', `[V3] Copilot returned only ${keywords.length} keywords, using fallback`);
+                        const baseName = nextCategory.name.toLowerCase();
+                        const fallbackKeywords = [
+                            `best ${baseName}`,
+                            `top ${baseName} reviews`,
+                            `${baseName} buying guide`,
+                            `affordable ${baseName}`,
+                            `${baseName} for indoor cats`,
+                            `${baseName} for kittens`,
+                            `${baseName} comparison`,
+                            `luxury ${baseName}`,
+                            `${baseName} on amazon`,
+                            `how to choose ${baseName}`,
+                            `${baseName} for senior cats`,
+                            `${baseName} for multiple cats`,
+                            `${baseName} recommendations`,
+                            `${baseName} under 50 dollars`,
+                            `${baseName} for small spaces`,
+                            `diy ${baseName}`,
+                            `${baseName} pros and cons`,
+                            `${baseName} for anxious cats`,
+                            `most popular ${baseName}`,
+                            `${baseName} worth buying`
+                        ];
+                        // Merge: keep any Copilot keywords + add fallbacks
+                        const merged = [...new Set([...keywords, ...fallbackKeywords])];
+                        keywords = merged;
+                        console.log(`[SEO-V3] ✓ Fallback: now have ${keywords.length} keywords total`);
+                    }
+                    // Create new v3CategoryContext
+                    v3CategoryContext = (0, category_context_1.createEmptyCategoryContext)(nextCategory.slug, 'catsluvus.com', `/${nextCategory.slug}`);
+                    v3CategoryContext.niche = nextCategory.name;
+                    v3CategoryContext.categoryName = nextCategory.name;
+                    v3CategoryContext.keywords = keywords.map((kw) => ({
+                        keyword: kw,
+                        slug: kw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+                        priority: 'medium',
+                        score: 50,
+                        status: 'pending',
+                        cpc: 0,
+                        volume: 0,
+                        difficulty: 0,
+                        intent: 'informational'
+                    }));
+                    // Update KV status with actual keyword count
+                    await saveCategoryStatus(nextCategory.slug, {
+                        category: nextCategory.slug,
+                        status: 'in_progress',
+                        articleCount: 0,
+                        expectedCount: keywords.length,
+                        avgSeoScore: 0,
+                        startedAt: new Date().toISOString()
+                    });
+                    // Save context to KV for persistence
+                    await saveResearchToKV({
+                        researchPhase: 'generation',
+                        selectedNiche: nextCategory.name,
+                        keywords: v3CategoryContext.keywords,
+                        startedAt: v3CategoryContext.createdAt
+                    }, v3CategoryContext);
+                    addActivityLog('success', `[V3] Started category: ${nextCategory.name} (${keywords.length} keywords)`);
+                    console.log(`[SEO-V3] 🚀 STARTING: ${nextCategory.name} with ${keywords.length} keywords`);
+                }
+                else {
+                    console.log('[SEO-V3] ❌ No categories available to discover');
+                    addActivityLog('info', '[V3] All categories exhausted - V3 autonomous stopped');
+                    v3AutonomousRunning = false;
+                    return;
+                }
+            }
+            catch (error) {
+                console.error(`[SEO-V3] ❌ Discovery failed: ${error.message}`);
+                addActivityLog('error', `[V3] Discovery failed: ${error.message}`);
+                console.log('[SEO-V3] Will retry in 5 minutes...');
+                setTimeout(runV3AutonomousGeneration, 300000);
+                return;
+            }
+        }
+    }
+    const pendingKeywords = v3CategoryContext.keywords.filter(k => k.status === 'pending');
+    const totalKeywords = v3CategoryContext.keywords.length;
+    const completedKeywords = totalKeywords - pendingKeywords.length;
+    const completionPct = ((completedKeywords / totalKeywords) * 100).toFixed(1);
+    if (pendingKeywords.length === 0) {
+        const currentNiche = v3CategoryContext.niche || v3CategoryContext.categorySlug || 'unknown';
+        console.log(`[SEO-V3] ✅ Niche "${currentNiche}" 100% complete! (${totalKeywords} articles)`);
+        addActivityLog('success', `[V3] Niche complete: ${currentNiche} (${totalKeywords} articles)`);
+        // Mark niche as complete in KV to prevent re-discovery on restart
+        await saveResearchToKV({ researchPhase: 'niche_complete', selectedNiche: currentNiche, keywords: v3CategoryContext.keywords, completedAt: new Date().toISOString() }, v3CategoryContext);
+        // Also save to category status system
+        await saveCategoryStatus(v3CategoryContext.categorySlug || (0, seo_data_1.keywordToSlug)(currentNiche), {
+            category: v3CategoryContext.categorySlug || (0, seo_data_1.keywordToSlug)(currentNiche),
+            status: 'completed',
+            articleCount: totalKeywords,
+            expectedCount: totalKeywords,
+            avgSeoScore: 85,
+            startedAt: v3CategoryContext.createdAt || new Date().toISOString(),
+            completedAt: new Date().toISOString()
+        });
+        // V3 AUTONOMOUS: Discover and start next category via Copilot CLI
+        if (v3AutonomousRunning) {
+            addActivityLog('info', '[V3] Discovering next high-CPC category...');
+            try {
+                const nextCategory = await discoverNextCategory();
+                if (nextCategory) {
+                    addActivityLog('info', `[V3] Found next category: ${nextCategory.name}`);
+                    // IMMEDIATELY save in_progress to KV so retries find this category
+                    let kvSaved2 = await saveCategoryStatus(nextCategory.slug, {
+                        category: nextCategory.slug,
+                        status: 'in_progress',
+                        articleCount: 0,
+                        expectedCount: 0,
+                        avgSeoScore: 0,
+                        startedAt: new Date().toISOString()
+                    });
+                    if (!kvSaved2) {
+                        console.log(`[SEO-V3] ⚠️ KV save failed for ${nextCategory.slug}, retrying in 2s...`);
+                        await new Promise(r => setTimeout(r, 2000));
+                        kvSaved2 = await saveCategoryStatus(nextCategory.slug, {
+                            category: nextCategory.slug,
+                            status: 'in_progress',
+                            articleCount: 0,
+                            expectedCount: 0,
+                            avgSeoScore: 0,
+                            startedAt: new Date().toISOString()
+                        });
+                        if (!kvSaved2) {
+                            console.error(`[SEO-V3] ❌ CRITICAL: Could not save ${nextCategory.slug} to KV after retry`);
+                        }
+                    }
+                    // Create Worker routes for new category
+                    await ensureWorkerRouteForCategory(nextCategory.slug);
+                    // Generate keywords for new category
+                    let keywords = await generateCategoryKeywords(nextCategory);
+                    // Fallback keywords if Copilot fails
+                    if (keywords.length < 5) {
+                        addActivityLog('warning', `[V3] Copilot returned only ${keywords.length} keywords, using fallback`);
+                        const baseName = nextCategory.name.toLowerCase();
+                        const fallbackKeywords = [
+                            `best ${baseName}`, `top ${baseName} reviews`, `${baseName} buying guide`,
+                            `affordable ${baseName}`, `${baseName} for indoor cats`, `${baseName} for kittens`,
+                            `${baseName} comparison`, `luxury ${baseName}`, `${baseName} on amazon`,
+                            `how to choose ${baseName}`, `${baseName} for senior cats`, `${baseName} for multiple cats`,
+                            `${baseName} recommendations`, `${baseName} under 50 dollars`, `${baseName} for small spaces`,
+                            `diy ${baseName}`, `${baseName} pros and cons`, `${baseName} for anxious cats`,
+                            `most popular ${baseName}`, `${baseName} worth buying`
+                        ];
+                        keywords = [...new Set([...keywords, ...fallbackKeywords])];
+                    }
+                    // Create new v3CategoryContext
+                    v3CategoryContext = (0, category_context_1.createEmptyCategoryContext)(nextCategory.slug, 'catsluvus.com', `/${nextCategory.slug}`);
+                    v3CategoryContext.niche = nextCategory.name;
+                    v3CategoryContext.categoryName = nextCategory.name;
+                    v3CategoryContext.keywords = keywords.map((kw) => ({
+                        keyword: kw,
+                        slug: kw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+                        priority: 'medium',
+                        score: 50,
+                        status: 'pending',
+                        cpc: 0,
+                        volume: 0,
+                        difficulty: 0,
+                        intent: 'informational'
+                    }));
+                    // Update KV with keyword count
+                    await saveCategoryStatus(nextCategory.slug, {
+                        category: nextCategory.slug,
+                        status: 'in_progress',
+                        articleCount: 0,
+                        expectedCount: keywords.length,
+                        avgSeoScore: 0,
+                        startedAt: new Date().toISOString()
+                    });
+                    addActivityLog('success', `[V3] Started new category: ${nextCategory.name} (${keywords.length} keywords)`);
+                    // Continue autonomous generation with new category
+                    setImmediate(runV3AutonomousGeneration);
+                    return;
+                }
+                else {
+                    addActivityLog('info', '[V3] No more categories available');
+                }
+            }
+            catch (error) {
+                addActivityLog('error', `[V3] Category discovery failed: ${error.message}`);
+            }
+        }
+        // Clear context - no more work
+        v3CategoryContext = null;
+        return;
+    }
+    // Sort by priority: HIGH > MEDIUM > LOW, then by score (highest first)
+    // Normalize priority to lowercase for consistent sorting
+    const priorityOrder = { high: 0, medium: 1, low: 2 };
+    const sortedPending = [...pendingKeywords].sort((a, b) => {
+        const aPriority = (a.priority || 'low').toLowerCase();
+        const bPriority = (b.priority || 'low').toLowerCase();
+        const priorityDiff = (priorityOrder[aPriority] ?? 2) - (priorityOrder[bPriority] ?? 2);
+        if (priorityDiff !== 0)
+            return priorityDiff;
+        return (b.score || 0) - (a.score || 0);
+    });
+    const nextKeyword = sortedPending[0];
+    console.log(`[SEO-V3] 📊 Niche Progress: ${completedKeywords}/${totalKeywords} (${completionPct}%) | Next: [${nextKeyword.priority?.toUpperCase()}] "${nextKeyword.keyword}"`);
+    const articleStartTime = Date.now();
+    const success = await generateV3Article(nextKeyword, v3CategoryContext);
+    const articleDurationMs = Date.now() - articleStartTime;
+    if (success) {
+        recordSessionSuccess(true, articleDurationMs);
+        nextKeyword.status = 'published';
+    }
+    else {
+        recordSessionError(`Failed: "${nextKeyword.keyword}"`);
+        nextKeyword.status = 'published'; // Still mark as attempted to avoid retry loops
+    }
+    // Save progress to KV after each article (using 'in_progress' status to distinguish from complete)
+    await saveResearchToKV({ researchPhase: 'generation_in_progress', selectedNiche: v3CategoryContext.niche, keywords: v3CategoryContext.keywords }, v3CategoryContext);
+    // Continue with next article
+    if (v3AutonomousRunning) {
+        setImmediate(runV3AutonomousGeneration);
+    }
+}
+// ═══════════════════════════════════════════════════════════════════════════
+// NOTE: V1 Pet Insurance generation runs independently in seo-generator.ts
+// V3 handles dynamic category discovery with Cloudflare AI generation
+// V3's own auto-start is below (v3AutonomousRunning with 15s delay)
+// ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// FREE PAGESPEED INSIGHTS API (No API key required for basic usage)
+// ═══════════════════════════════════════════════════════════════════════════
+// PageSpeedResult interface is defined at the top of the file
+async function analyzePageSpeed(url, strategy = 'mobile') {
+    const apiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&strategy=${strategy}&category=performance&category=seo&category=accessibility&category=best-practices`;
+    console.log(`[PageSpeed] Analyzing ${url} (${strategy})...`);
+    const response = await fetch(apiUrl);
+    if (!response.ok) {
+        throw new Error(`PageSpeed API error: ${response.status} ${response.statusText}`);
+    }
+    const data = await response.json();
+    const lighthouse = data.lighthouseResult;
+    if (!lighthouse) {
+        throw new Error('No Lighthouse results in response');
+    }
+    const opportunities = [];
+    const opportunityAudits = [
+        'render-blocking-resources',
+        'unused-css-rules',
+        'unused-javascript',
+        'modern-image-formats',
+        'offscreen-images',
+        'efficient-animated-content',
+        'duplicated-javascript',
+        'legacy-javascript',
+        'unminified-css',
+        'unminified-javascript'
+    ];
+    for (const auditId of opportunityAudits) {
+        const audit = lighthouse.audits?.[auditId];
+        if (audit && audit.score !== null && audit.score < 1) {
+            opportunities.push({
+                title: audit.title || auditId,
+                description: audit.description || '',
+                savings: audit.displayValue || 'Potential savings'
+            });
+        }
+    }
+    const result = {
+        url,
+        strategy,
+        scores: {
+            performance: Math.round((lighthouse.categories?.performance?.score || 0) * 100),
+            accessibility: Math.round((lighthouse.categories?.accessibility?.score || 0) * 100),
+            bestPractices: Math.round((lighthouse.categories?.['best-practices']?.score || 0) * 100),
+            seo: Math.round((lighthouse.categories?.seo?.score || 0) * 100)
+        },
+        coreWebVitals: {
+            lcp: Math.round(lighthouse.audits?.['largest-contentful-paint']?.numericValue || 0),
+            cls: parseFloat((lighthouse.audits?.['cumulative-layout-shift']?.numericValue || 0).toFixed(3)),
+            tbt: Math.round(lighthouse.audits?.['total-blocking-time']?.numericValue || 0),
+            fcp: Math.round(lighthouse.audits?.['first-contentful-paint']?.numericValue || 0),
+            si: Math.round(lighthouse.audits?.['speed-index']?.numericValue || 0),
+            ttfb: Math.round(lighthouse.audits?.['server-response-time']?.numericValue || 0)
+        },
+        opportunities,
+        fetchedAt: new Date().toISOString()
+    };
+    console.log(`[PageSpeed] ${url}: Performance ${result.scores.performance}/100, SEO ${result.scores.seo}/100, LCP ${result.coreWebVitals.lcp}ms`);
+    return result;
+}
+function getPageSpeedGrade(score) {
+    if (score >= 90)
+        return { grade: 'A', color: 'green', status: 'Good' };
+    if (score >= 50)
+        return { grade: 'B', color: 'orange', status: 'Needs Improvement' };
+    return { grade: 'C', color: 'red', status: 'Poor' };
+}
+function getCoreWebVitalStatus(metric, value) {
+    switch (metric) {
+        case 'lcp':
+            if (value <= 2500)
+                return { status: 'Good', color: 'green' };
+            if (value <= 4000)
+                return { status: 'Needs Improvement', color: 'orange' };
+            return { status: 'Poor', color: 'red' };
+        case 'cls':
+            if (value <= 0.1)
+                return { status: 'Good', color: 'green' };
+            if (value <= 0.25)
+                return { status: 'Needs Improvement', color: 'orange' };
+            return { status: 'Poor', color: 'red' };
+        case 'tbt':
+            if (value <= 200)
+                return { status: 'Good', color: 'green' };
+            if (value <= 600)
+                return { status: 'Needs Improvement', color: 'orange' };
+            return { status: 'Poor', color: 'red' };
+        case 'ttfb':
+            if (value <= 800)
+                return { status: 'Good', color: 'green' };
+            if (value <= 1800)
+                return { status: 'Needs Improvement', color: 'orange' };
+            return { status: 'Poor', color: 'red' };
+        default:
+            return { status: 'Unknown', color: 'gray' };
+    }
+}
+/**
+ * Auto-optimize article HTML for better performance scores
+ * Applies lazy loading, image optimization, and other fixes
+ */
+function optimizeArticleHtml(html) {
+    let optimized = html;
+    // 0. Add preconnect hints for external resources (reduces DNS/TCP latency by 100-300ms each)
+    const preconnectTags = `
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://images.unsplash.com">
+<link rel="preconnect" href="https://i.ytimg.com">`;
+    if (!optimized.includes('rel="preconnect"')) {
+        optimized = optimized.replace(/<head([^>]*)>/i, `<head$1>${preconnectTags}`);
+    }
+    // 1. Add lazy loading to all images except first (hero image)
+    let imageCount = 0;
+    optimized = optimized.replace(/<img([^>]*)>/gi, (match, attrs) => {
+        imageCount++;
+        if (attrs.includes('loading='))
+            return match; // Already has loading attr
+        if (imageCount === 1) {
+            return `<img${attrs} loading="eager" decoding="async">`;
+        }
+        else {
+            return `<img${attrs} loading="lazy" decoding="async">`;
+        }
+    });
+    // 2. Add dimensions to images without them (prevents CLS)
+    optimized = optimized.replace(/<img([^>]*)>/gi, (match, attrs) => {
+        if (!attrs.includes('width=') && !attrs.includes('style=')) {
+            return match.replace('>', ' width="800" height="600" style="aspect-ratio: 4/3;">');
+        }
+        return match;
+    });
+    // 3. Optimize Unsplash URLs for WebP format
+    optimized = optimized.replace(/https:\/\/images\.unsplash\.com\/([^"'\s\?]+)(?:\?[^"'\s]*)?/g, 'https://images.unsplash.com/$1?w=800&q=80&fm=webp&auto=format');
+    // 4. Replace YouTube iframes with lightweight facades (biggest performance win)
+    optimized = optimized.replace(/<iframe[^>]*src=["'](?:https?:)?\/\/(?:www\.)?youtube(?:-nocookie)?\.com\/embed\/([a-zA-Z0-9_-]+)[^"']*["'][^>]*><\/iframe>/gi, (match, videoId) => {
+        return `<div class="yt-facade" style="position:relative;padding-bottom:56.25%;background:#000;cursor:pointer;" onclick="this.innerHTML='<iframe src=\\'https://www.youtube.com/embed/${videoId}?autoplay=1\\' style=\\'position:absolute;top:0;left:0;width:100%;height:100%;border:0\\' allow=\\'autoplay;encrypted-media\\' allowfullscreen></iframe>'">
+  <img src="https://i.ytimg.com/vi/${videoId}/hqdefault.jpg" alt="Video" style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;" loading="lazy">
+  <svg style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:68px;height:48px;" viewBox="0 0 68 48"><path d="M66.52 7.74c-.78-2.93-2.49-5.41-5.42-6.19C55.79.13 34 0 34 0S12.21.13 6.9 1.55c-2.93.78-4.63 3.26-5.42 6.19C.06 13.05 0 24 0 24s.06 10.95 1.48 16.26c.78 2.93 2.49 5.41 5.42 6.19C12.21 47.87 34 48 34 48s21.79-.13 27.1-1.55c2.93-.78 4.64-3.26 5.42-6.19C67.94 34.95 68 24 68 24s-.06-10.95-1.48-16.26z" fill="red"/><path d="M45 24L27 14v20" fill="white"/></svg>
+</div>`;
+    });
+    // 5. Add loading="lazy" to remaining iframes
+    optimized = optimized.replace(/<iframe([^>]*)>/gi, (match, attrs) => {
+        if (!attrs.includes('loading=')) {
+            return `<iframe${attrs} loading="lazy">`;
+        }
+        return match;
+    });
+    // 5. Defer non-critical scripts
+    optimized = optimized.replace(/<script([^>]*?)src=["']([^"']+)["']([^>]*)>/gi, (match, before, src, after) => {
+        if (!before.includes('defer') && !before.includes('async')) {
+            return `<script${before}src="${src}" defer${after}>`;
+        }
+        return match;
+    });
+    // 6. Add font-display: swap to any @font-face rules
+    optimized = optimized.replace(/@font-face\s*\{([^}]+)\}/gi, (match, content) => {
+        if (!content.includes('font-display')) {
+            return `@font-face {${content}font-display: swap;}`;
+        }
+        return match;
+    });
+    return optimized;
+}
+// PageSpeed Queue Status Endpoint
+router.get('/pagespeed/queue', (req, res) => {
+    const now = Date.now();
+    const timeSinceLastCall = now - pageSpeedLastCall;
+    const nextCheckIn = Math.max(0, PAGESPEED_MIN_INTERVAL - timeSinceLastCall);
+    res.json({
+        success: true,
+        queue: {
+            size: pageSpeedQueue.length,
+            processing: pageSpeedProcessing,
+            lastCallAgo: Math.round(timeSinceLastCall / 1000),
+            nextCheckIn: Math.round(nextCheckIn / 1000),
+            minInterval: PAGESPEED_MIN_INTERVAL / 1000,
+            items: pageSpeedQueue.map(item => ({
+                slug: item.articleSlug,
+                retryCount: item.retryCount,
+                waitingFor: Math.round((now - item.addedAt) / 1000)
+            }))
+        },
+        settings: {
+            minIntervalSeconds: PAGESPEED_MIN_INTERVAL / 1000,
+            maxRetries: PAGESPEED_MAX_RETRIES,
+            backoffBaseSeconds: PAGESPEED_BACKOFF_BASE / 1000
+        }
+    });
+});
+// PageSpeed Analysis Endpoint (FREE - no API key required)
+router.get('/pagespeed', async (req, res) => {
+    try {
+        const url = req.query.url;
+        const strategy = req.query.strategy || 'mobile';
+        if (!url) {
+            return res.status(400).json({ error: 'URL parameter required' });
+        }
+        const result = await analyzePageSpeed(url, strategy);
+        const performanceGrade = getPageSpeedGrade(result.scores.performance);
+        const seoGrade = getPageSpeedGrade(result.scores.seo);
+        res.json({
+            success: true,
+            data: {
+                ...result,
+                grades: {
+                    performance: performanceGrade,
+                    accessibility: getPageSpeedGrade(result.scores.accessibility),
+                    bestPractices: getPageSpeedGrade(result.scores.bestPractices),
+                    seo: seoGrade
+                },
+                coreWebVitalStatus: {
+                    lcp: getCoreWebVitalStatus('lcp', result.coreWebVitals.lcp),
+                    cls: getCoreWebVitalStatus('cls', result.coreWebVitals.cls),
+                    tbt: getCoreWebVitalStatus('tbt', result.coreWebVitals.tbt),
+                    ttfb: getCoreWebVitalStatus('ttfb', result.coreWebVitals.ttfb)
+                },
+                passesThresholds: {
+                    performance: result.scores.performance >= 90,
+                    seo: result.scores.seo >= 90,
+                    lcp: result.coreWebVitals.lcp <= 2500,
+                    cls: result.coreWebVitals.cls <= 0.1
+                }
+            }
+        });
+    }
+    catch (error) {
+        console.error('[PageSpeed] Error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+// Batch PageSpeed Analysis (analyze multiple URLs)
+router.post('/pagespeed/batch', async (req, res) => {
+    try {
+        const { urls, strategy = 'mobile' } = req.body;
+        if (!urls || !Array.isArray(urls) || urls.length === 0) {
+            return res.status(400).json({ error: 'URLs array required' });
+        }
+        if (urls.length > 10) {
+            return res.status(400).json({ error: 'Maximum 10 URLs per batch' });
+        }
+        const results = [];
+        const errors = [];
+        for (const url of urls) {
+            try {
+                const result = await analyzePageSpeed(url, strategy);
+                results.push(result);
+            }
+            catch (error) {
+                errors.push({ url, error: error.message });
+            }
+        }
+        const avgPerformance = results.length > 0
+            ? Math.round(results.reduce((sum, r) => sum + r.scores.performance, 0) / results.length)
+            : 0;
+        res.json({
+            success: true,
+            data: {
+                results,
+                errors,
+                summary: {
+                    totalAnalyzed: results.length,
+                    totalErrors: errors.length,
+                    averagePerformance: avgPerformance,
+                    averageSeo: results.length > 0
+                        ? Math.round(results.reduce((sum, r) => sum + r.scores.seo, 0) / results.length)
+                        : 0
+                }
+            }
+        });
+    }
+    catch (error) {
+        console.error('[PageSpeed] Batch error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+// ═══════════════════════════════════════════════════════════════════════════
+// V3 AUTO-START (New Category Discovery - autonomous research + generation)
+// ═══════════════════════════════════════════════════════════════════════════
+// NOTE: V3 auto-starts the research pipeline that discovers NEW categories
+// Uses Cloudflare AI for content generation (independent from V2's Copilot CLI)
+// The petinsurance queue is handled by V1 (seo-generator.ts).
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('[SEO-V3] Module loaded - scheduling V3 research pipeline auto-start in 15 seconds...');
+// Auto-start V3 research pipeline (discovers new categories, NOT petinsurance)
+setTimeout(() => {
+    console.log('[SEO-V3] setTimeout triggered for V3 research pipeline...');
+    if (!v3AutonomousRunning) {
+        console.log('[SEO-V3] 🔬 Auto-starting V3 autonomous research pipeline...');
+        v3AutonomousRunning = true;
+        resetSessionHealth();
+        addActivityLog('info', '[V3] Auto-starting autonomous research & generation pipeline (new category discovery)');
+        runV3AutonomousGeneration();
+    }
+    else {
+        console.log('[SEO-V3] V3 research pipeline already running, skipping auto-start');
+    }
+}, 15000); // Wait 15 seconds to let V1 start first
+// ============================================================================
+// AUTONOMOUS ROUTE HEALING - Fixes missing Cloudflare Worker routes
+// Runs every 10 minutes to ensure all categories have proper routing
+// ============================================================================
+async function getAllKnownCategories() {
+    const staticCategories = [
+        'petinsurance',
+        'automatic-cat-feeders',
+        'cat-automatic-litter-box-cleaners',
+        'cat-calming-anxiety-products',
+        'cat-carriers-travel-products',
+        'cat-dna-testing',
+        'cat-enclosures-outdoor-catios',
+        'cat-flea-tick-treatments',
+        'cat-food-delivery-services',
+        'cat-food-nutrition',
+        'cat-gps-trackers',
+        'cat-grooming-tools-kits',
+        'cat-health-supplements',
+        'cat-scratchers-scratching-posts',
+        'cat-trees-furniture',
+        'cat-beds',
+        'cat-health-wellness',
+        'cat-litter-boxes',
+        'cat-toys',
+        'cat-trees-condos',
+        'cat-scratching-posts-pads',
+        'cat-strollers-pet-buggies',
+        'cat-cameras-monitors',
+        'cat-furniture-protectors',
+        'cat-litter-mats',
+        'cat-dental-care-products'
+    ];
+    // Include dynamically discovered V3 categories from KV
+    const dynamicV3Cats = await getAllCategoryStatusKeys();
+    const combined = new Set([...staticCategories, ...V3_LEGACY_CATEGORIES, ...dynamicV3Cats]);
+    return Array.from(combined);
+}
+async function healMissingRoutes() {
+    const cfApiToken = doppler_secrets_1.secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+    if (!cfApiToken) {
+        console.log('[Route Healer] No Cloudflare API token - skipping');
+        return { checked: 0, created: 0, errors: ['No API token'] };
+    }
+    const allCategories = await getAllKnownCategories();
+    console.log(`[Route Healer] 🔧 Checking ${allCategories.length} categories for missing routes...`);
+    let checked = 0;
+    let created = 0;
+    const errors = [];
+    let existingRoutes = [];
+    try {
+        existingRoutes = await fetchWorkerRoutes(cfApiToken);
+        console.log(`[Route Healer] Found ${existingRoutes.length} existing routes`);
+    }
+    catch (err) {
+        console.log(`[Route Healer] Failed to fetch routes: ${err.message}`);
+        return { checked: 0, created: 0, errors: [err.message] };
+    }
+    for (const category of allCategories) {
+        checked++;
+        const routePattern = `catsluvus.com/${category}/*`;
+        const hasRoute = existingRoutes.some((r) => r.pattern === routePattern);
+        if (!hasRoute) {
+            console.log(`[Route Healer] ⚠️ Missing route for: ${category}`);
+            try {
+                const result = await ensureWorkerRouteForCategory(category);
+                if (result.success) {
+                    created++;
+                    console.log(`[Route Healer] ✅ Created route for: ${category}`);
+                    addActivityLog('success', `[Route Healer] Auto-created Worker route for ${category}`, { routeId: result.routeId });
+                }
+                else {
+                    errors.push(`${category}: ${result.error}`);
+                }
+            }
+            catch (err) {
+                errors.push(`${category}: ${err.message}`);
+            }
+        }
+    }
+    console.log(`[Route Healer] ✅ Check complete: ${checked} checked, ${created} created, ${errors.length} errors`);
+    return { checked, created, errors };
+}
+// Run route healer every 10 minutes
+setInterval(async () => {
+    try {
+        await healMissingRoutes();
+    }
+    catch (err) {
+        console.log(`[Route Healer] Error: ${err.message}`);
+    }
+}, 10 * 60 * 1000); // 10 minutes
+// Also run immediately on startup (after 30 seconds)
+setTimeout(async () => {
+    console.log('[Route Healer] Initial route healing check...');
+    try {
+        const result = await healMissingRoutes();
+        if (result.created > 0) {
+            console.log(`[Route Healer] 🔧 Fixed ${result.created} missing routes on startup`);
+        }
+    }
+    catch (err) {
+        console.log(`[Route Healer] Startup check error: ${err.message}`);
+    }
+}, 30000);
+// Manual endpoint to trigger route healing
+router.post('/heal-routes', async (req, res) => {
+    try {
+        const result = await healMissingRoutes();
+        res.json({
+            success: true,
+            ...result,
+            message: result.created > 0 ? `Created ${result.created} missing routes` : 'All routes already configured'
+        });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+exports.default = router;
+//# sourceMappingURL=seo-generator-v3.js.map

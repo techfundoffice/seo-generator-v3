@@ -1697,21 +1697,22 @@ async function countArticlesInCategory(category: string): Promise<number> {
 }
 
 async function canAttemptDiscovery(): Promise<boolean> {
-  await loadDiscoveryState();
-  if (discoveryState.cooldownUntil && new Date() < discoveryState.cooldownUntil) {
-    return false;
+  if (!discoveryState.loaded) {
+    await loadDiscoveryState();
+    if (discoveryState.cooldownUntil) {
+      discoveryState.failureCount = 0;
+      discoveryState.cooldownUntil = null;
+      await saveDiscoveryState();
+      console.log('[SEO-V3] ✅ Cleared legacy cooldown from KV');
+    }
   }
-  return true;
+  return true; // Never block — multi-AI cascade handles failures
 }
 
 async function recordDiscoveryFailure(): Promise<void> {
   discoveryState.failureCount++;
   discoveryState.lastFailure = new Date();
-  if (discoveryState.failureCount >= discoveryState.maxRetries) {
-    discoveryState.cooldownUntil = new Date(Date.now() + discoveryState.cooldownMinutes * 60 * 1000);
-    addActivityLog('warning', `[V3] Discovery cooldown activated for ${discoveryState.cooldownMinutes} minutes`);
-  }
-  await saveDiscoveryState();
+  // No cooldown — 3-AI cascade handles failures gracefully
 }
 
 async function recordDiscoverySuccess(): Promise<void> {
@@ -1722,37 +1723,43 @@ async function recordDiscoverySuccess(): Promise<void> {
 }
 
 async function logDiscoveryError(reason: string): Promise<null> {
-  // NO FALLBACKS - Log error and return null for manual intervention
-  // See .github/skills/error-recovery/SKILL.md for error handling guidelines
-  console.error(`[SEO-V3] ❌ Discovery blocked: ${reason}`);
-  addActivityLog('error', `[V3] Discovery failed - no fallbacks used. Reason: ${reason}`);
-  addActivityLog('warning', `[V3] System in cooldown. Manual intervention may be required.`);
+  console.error(`[SEO-V3] ❌ Discovery issue: ${reason}`);
+  addActivityLog('error', `[V3] Discovery issue: ${reason}`);
   return null;
 }
 
 /**
- * Autonomous category discovery via Copilot CLI
- * Discovers the next high-value cat category, excluding:
- * - All V3 completed/in-progress categories
- * - All V2 completed categories (prevents overlap)
+ * Sanitize raw AI output and parse as DiscoveredCategory JSON.
+ * Handles control characters that cause JSON.parse crashes.
  */
-async function discoverNextCategory(): Promise<DiscoveredCategory | null> {
-  if (!await canAttemptDiscovery()) {
-    return logDiscoveryError('Discovery in cooldown period - wait for cooldown to expire');
+function sanitizeAndParseDiscoveryJSON(raw: string, allExcluded: string[]): DiscoveredCategory | null {
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return null;
+  const sanitized = jsonMatch[0].replace(/[\x00-\x1F\x7F]/g, (char) => {
+    if (char === '\n') return '\\n';
+    if (char === '\r') return '\\r';
+    if (char === '\t') return '\\t';
+    return '';
+  });
+  try {
+    const cat = JSON.parse(sanitized) as DiscoveredCategory;
+    if (!cat.name || !cat.slug) return null;
+    if (allExcluded.includes(cat.slug)) {
+      console.log(`[SEO-V3] ⚠️ AI suggested already-done category "${cat.slug}" - trying next strategy`);
+      return null;
+    }
+    return cat;
+  } catch (e: any) {
+    console.log(`[SEO-V3] ⚠️ JSON parse failed after sanitization: ${e.message}`);
+    return null;
   }
+}
 
-  addActivityLog('info', '[V3] Discovering next category via Copilot CLI (autonomous)...');
-
-  // Get ALL categories to exclude: V3 completed + V2 completed
-  const v3Completed = await getCompletedCategories();
-  const v2Completed = await getV2CompletedCategories();
-  const v3InProgress = await getAllCategoryStatusKeys();
-  const allExcluded = [...new Set([...v3Completed, ...v2Completed, ...v3InProgress])];
-  const excludedList = allExcluded.join(', ') || 'none yet';
-
-  addActivityLog('info', `[V3] Excluding ${allExcluded.length} categories (V3: ${v3Completed.length} completed, V2: ${v2Completed.length} completed)`);
-
-  const prompt = `You are a cat niche SEO researcher. Find the next high-value category for catsluvus.com.
+/**
+ * Build the discovery prompt used by all AI strategies.
+ */
+function buildDiscoveryPrompt(excludedList: string): string {
+  return `You are a cat niche SEO researcher. Find the next high-value category for catsluvus.com.
 
 ALREADY COMPLETED OR IN-PROGRESS CATEGORIES (do NOT suggest these):
 ${excludedList}
@@ -1773,33 +1780,83 @@ Return ONLY valid JSON (no markdown, no explanation):
   "affiliatePotential": "high",
   "reasoning": "Brief explanation"
 }`;
+}
 
-  try {
-    const result = await generateWithCopilotCLI(prompt, 120000, 2);
-    if (result) {
-      const jsonMatch = result.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const category = JSON.parse(jsonMatch[0]) as DiscoveredCategory;
-        // Check against ALL excluded categories
-        if (allExcluded.includes(category.slug)) {
-          addActivityLog('warning', `[V3] Copilot suggested excluded category: ${category.slug} - retrying`);
-          await recordDiscoveryFailure();
-          return logDiscoveryError(`Copilot suggested already-used category: ${category.slug}`);
-        }
-        await recordDiscoverySuccess();
-        addActivityLog('success', `[V3] 🎯 Autonomously discovered category: ${category.name} (${category.slug})`, category);
-        console.log(`[SEO-V3] ✅ Autonomous discovery: ${category.name} (${category.slug}) - ${category.reasoning}`);
-        return category;
-      }
-    }
-    await recordDiscoveryFailure();
-    return logDiscoveryError('Copilot response did not contain valid JSON');
-  } catch (error: any) {
-    console.error(`[SEO-V3] ❌ Copilot discovery failed: ${error.message}`);
-    addActivityLog('error', `[V3] Copilot discovery failed: ${error.message}`);
-    await recordDiscoveryFailure();
-    return logDiscoveryError(`Copilot CLI error: ${error.message}`);
+/**
+ * Autonomous category discovery via multi-AI cascade.
+ * Tries Copilot CLI → Cloudflare AI → OpenRouter. No cooldowns.
+ * Discovers the next high-value cat category, excluding:
+ * - All V3 completed/in-progress categories
+ * - All V2 completed categories (prevents overlap)
+ */
+async function discoverNextCategory(): Promise<DiscoveredCategory | null> {
+  if (!await canAttemptDiscovery()) {
+    return logDiscoveryError('Discovery check failed');
   }
+
+  addActivityLog('info', '[V3] Discovering next category (multi-AI cascade)...');
+
+  const v3Completed = await getCompletedCategories();
+  const v2Completed = await getV2CompletedCategories();
+  const v3InProgress = await getAllCategoryStatusKeys();
+  const allExcluded = [...new Set([...v3Completed, ...v2Completed, ...v3InProgress])];
+  const excludedList = allExcluded.join(', ') || 'none yet';
+  addActivityLog('info', `[V3] Excluding ${allExcluded.length} categories`);
+
+  const prompt = buildDiscoveryPrompt(excludedList);
+
+  // STRATEGY 1: Copilot CLI (GPT-4.1 — best quality)
+  try {
+    console.log('[SEO-V3] 🔍 Discovery Strategy 1/3: Copilot CLI (GPT-4.1)...');
+    const result = await generateWithCopilotCLI(prompt, 120000, 2);
+    const cat = result ? sanitizeAndParseDiscoveryJSON(result, allExcluded) : null;
+    if (cat) {
+      await recordDiscoverySuccess();
+      addActivityLog('success', `[V3] 🎯 Discovered via Copilot: ${cat.name} (${cat.slug})`);
+      console.log(`[SEO-V3] ✅ Copilot discovered: ${cat.name} (${cat.slug})`);
+      return cat;
+    }
+    console.log('[SEO-V3] Copilot: no valid category, trying Cloudflare AI...');
+  } catch (e: any) {
+    console.log(`[SEO-V3] Copilot failed: ${e.message}, trying Cloudflare AI...`);
+  }
+
+  // STRATEGY 2: Cloudflare AI (Llama 4 Scout — free, reliable, 4-model cascade)
+  try {
+    console.log('[SEO-V3] 🔍 Discovery Strategy 2/3: Cloudflare AI...');
+    const aiResult = await generateWithCloudflareAI(prompt, { timeout: 120000 });
+    const cat = aiResult?.content ? sanitizeAndParseDiscoveryJSON(aiResult.content, allExcluded) : null;
+    if (cat) {
+      await recordDiscoverySuccess();
+      addActivityLog('success', `[V3] 🎯 Discovered via Cloudflare AI: ${cat.name} (${cat.slug})`);
+      console.log(`[SEO-V3] ✅ Cloudflare AI discovered: ${cat.name} (${cat.slug})`);
+      return cat;
+    }
+    console.log('[SEO-V3] Cloudflare AI: no valid category, trying OpenRouter...');
+  } catch (e: any) {
+    console.log(`[SEO-V3] Cloudflare AI failed: ${e.message}, trying OpenRouter...`);
+  }
+
+  // STRATEGY 3: OpenRouter (5 free models — Llama, Mistral, Gemma, etc.)
+  try {
+    console.log('[SEO-V3] 🔍 Discovery Strategy 3/3: OpenRouter (free models)...');
+    const result = await generateWithOpenRouter(prompt, 120000);
+    const cat = result ? sanitizeAndParseDiscoveryJSON(result, allExcluded) : null;
+    if (cat) {
+      await recordDiscoverySuccess();
+      addActivityLog('success', `[V3] 🎯 Discovered via OpenRouter: ${cat.name} (${cat.slug})`);
+      console.log(`[SEO-V3] ✅ OpenRouter discovered: ${cat.name} (${cat.slug})`);
+      return cat;
+    }
+    console.log('[SEO-V3] OpenRouter: no valid category');
+  } catch (e: any) {
+    console.log(`[SEO-V3] OpenRouter failed: ${e.message}`);
+  }
+
+  // All 3 AI services failed — return null, caller will retry in 2 minutes
+  addActivityLog('warning', '[V3] All 3 AI strategies failed — will retry in 2 minutes');
+  console.log('[SEO-V3] ⚠️ All 3 AI strategies failed. Retrying shortly...');
+  return null;
 }
 
 async function fetchGoogleSuggestions(query: string): Promise<string[]> {
@@ -8131,16 +8188,16 @@ async function runV3AutonomousGeneration() {
           addActivityLog('success', `[V3] Started category: ${nextCategory.name} (${keywords.length} keywords)`);
           console.log(`[SEO-V3] 🚀 STARTING: ${nextCategory.name} with ${keywords.length} keywords`);
         } else {
-          console.log('[SEO-V3] ❌ No categories available to discover');
-          addActivityLog('info', '[V3] All categories exhausted - V3 autonomous stopped');
-          v3AutonomousRunning = false;
+          console.log('[SEO-V3] ⏳ No categories discovered - retrying in 2 minutes...');
+          addActivityLog('info', '[V3] Discovery returned null - scheduling retry in 2 minutes');
+          setTimeout(runV3AutonomousGeneration, 2 * 60 * 1000);
           return;
         }
       } catch (error: any) {
         console.error(`[SEO-V3] ❌ Discovery failed: ${error.message}`);
         addActivityLog('error', `[V3] Discovery failed: ${error.message}`);
-        console.log('[SEO-V3] Will retry in 5 minutes...');
-        setTimeout(runV3AutonomousGeneration, 300000);
+        console.log('[SEO-V3] Will retry in 2 minutes...');
+        setTimeout(runV3AutonomousGeneration, 2 * 60 * 1000);
         return;
       }
     }
@@ -8259,13 +8316,19 @@ async function runV3AutonomousGeneration() {
           setImmediate(runV3AutonomousGeneration);
           return;
         } else {
-          addActivityLog('info', '[V3] No more categories available');
+          console.log('[SEO-V3] ⏳ Category discovery returned null - retrying in 2 minutes...');
+          addActivityLog('info', '[V3] No categories found - scheduling retry in 2 minutes');
+          setTimeout(runV3AutonomousGeneration, 2 * 60 * 1000);
+          return;
         }
       } catch (error: any) {
         addActivityLog('error', `[V3] Category discovery failed: ${error.message}`);
+        console.log('[SEO-V3] ⏳ Discovery error during transition - retrying in 2 minutes...');
+        setTimeout(runV3AutonomousGeneration, 2 * 60 * 1000);
+        return;
       }
     }
-    
+
     // Clear context - no more work
     v3CategoryContext = null;
     return;
