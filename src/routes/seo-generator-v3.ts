@@ -685,13 +685,13 @@ const CATEGORY_CONTENT_DATA: Record<string, CategoryContentData> = {
       bio: 'Veterinarian and expert product reviewer specializing in cat hygiene and automated pet products.'
     },
     brands: ['Litter-Robot 4', 'PetSafe ScoopFree', 'Whisker Litter-Robot', 'CatGenie', 'PetKit Pura Max'],
-    comparisonHeaders: ['Product', 'Price', 'Noise Level', 'Capacity', 'Smart Features'],
+    comparisonHeaders: ['Product', 'Noise Level', 'Capacity', 'Smart Features'],
     comparisonRows: [
-      ['Litter-Robot 4', '$699', '< 40 dB', '8+ lbs cats', 'WiFi, App, Health Tracking'],
-      ['PetSafe ScoopFree', '$189', '< 45 dB', '15 lbs cats', 'Crystal Trays, Odor Control'],
-      ['CatGenie', '$549', '< 50 dB', '6+ lbs cats', 'Self-Washing, Flushable'],
-      ['PetKit Pura Max', '$449', '< 38 dB', '18 lbs cats', 'App Control, Deodorizer'],
-      ['Whisker Litter-Robot 3', '$499', '< 42 dB', '7+ lbs cats', 'WiFi, Night Light']
+      ['Litter-Robot 4', '< 40 dB', '8+ lbs cats', 'WiFi, App, Health Tracking'],
+      ['PetSafe ScoopFree', '< 45 dB', '15 lbs cats', 'Crystal Trays, Odor Control'],
+      ['CatGenie', '< 50 dB', '6+ lbs cats', 'Self-Washing, Flushable'],
+      ['PetKit Pura Max', '< 38 dB', '18 lbs cats', 'App Control, Deodorizer'],
+      ['Whisker Litter-Robot 3', '< 42 dB', '7+ lbs cats', 'WiFi, Night Light']
     ],
     imageAltTemplates: ['automatic litter box {keyword}', 'self-cleaning litter box {keyword}', 'cat using automatic litter box'],
     imageCaptions: ['Modern automatic litter box for hassle-free cleaning.', 'Self-cleaning technology keeps your home fresh.', 'Smart litter box with app connectivity.'],
@@ -719,13 +719,13 @@ const CATEGORY_CONTENT_DATA: Record<string, CategoryContentData> = {
       bio: 'Certified cat behavior consultant specializing in feline environmental enrichment and cat furniture design.'
     },
     brands: ['Frisco', 'Feandrea', 'Go Pet Club', 'Armarkat', 'TRIXIE'],
-    comparisonHeaders: ['Brand', 'Price Range', 'Height', 'Weight Capacity', 'Key Features'],
+    comparisonHeaders: ['Brand', 'Height', 'Weight Capacity', 'Key Features'],
     comparisonRows: [
-      ['Frisco', '$50-200', '48-72"', '40+ lbs', 'Sisal Posts, Condos, Platforms'],
-      ['Feandrea', '$60-180', '54-67"', '35+ lbs', 'Multi-Level, Hammocks, Caves'],
-      ['Go Pet Club', '$80-250', '50-77"', '45+ lbs', 'Ladders, Baskets, Scratching Posts'],
-      ['Armarkat', '$40-160', '50-78"', '30+ lbs', 'Fleece Covering, Perches'],
-      ['TRIXIE', '$100-300', '48-65"', '50+ lbs', 'Scratching Surfaces, Toys']
+      ['Frisco', '48-72"', '40+ lbs', 'Sisal Posts, Condos, Platforms'],
+      ['Feandrea', '54-67"', '35+ lbs', 'Multi-Level, Hammocks, Caves'],
+      ['Go Pet Club', '50-77"', '45+ lbs', 'Ladders, Baskets, Scratching Posts'],
+      ['Armarkat', '50-78"', '30+ lbs', 'Fleece Covering, Perches'],
+      ['TRIXIE', '48-65"', '50+ lbs', 'Scratching Surfaces, Toys']
     ],
     imageAltTemplates: ['cat tree {keyword}', 'cat furniture {keyword}', 'cat climbing tower {keyword}'],
     imageCaptions: ['Multi-level cat tree for active cats.', 'Premium cat furniture with scratching posts.', 'Cozy cat condo for rest and play.'],
@@ -753,13 +753,13 @@ const CATEGORY_CONTENT_DATA: Record<string, CategoryContentData> = {
       bio: 'Expert in feline genetics and cat DNA testing with over 10 years of research experience.'
     },
     brands: ['Basepaws', 'Wisdom Panel', 'Orivet', 'MyCatDNA', 'Optimal Selection'],
-    comparisonHeaders: ['Provider', 'Price', 'Breeds Tested', 'Health Markers', 'Turnaround'],
+    comparisonHeaders: ['Provider', 'Breeds Tested', 'Health Markers', 'Turnaround'],
     comparisonRows: [
-      ['Basepaws', '$129-299', '21+ breeds', '40+ markers', '4-6 weeks'],
-      ['Wisdom Panel', '$99-159', '70+ breeds', '25+ markers', '2-3 weeks'],
-      ['Orivet', '$95-145', '18+ breeds', '200+ markers', '2-3 weeks'],
-      ['MyCatDNA', '$89', '22+ breeds', '40+ markers', '3-4 weeks'],
-      ['Optimal Selection', '$99', '28 breeds', '40+ markers', '2-3 weeks']
+      ['Basepaws', '21+ breeds', '40+ markers', '4-6 weeks'],
+      ['Wisdom Panel', '70+ breeds', '25+ markers', '2-3 weeks'],
+      ['Orivet', '18+ breeds', '200+ markers', '2-3 weeks'],
+      ['MyCatDNA', '22+ breeds', '40+ markers', '3-4 weeks'],
+      ['Optimal Selection', '28 breeds', '40+ markers', '2-3 weeks']
     ],
     imageAltTemplates: ['cat DNA testing {keyword}', 'feline genetics {keyword}', 'cat breed test {keyword}'],
     imageCaptions: ['Understanding your cat\'s genetic makeup.', 'DNA testing reveals breed and health insights.', 'Discover your cat\'s unique genetic story.'],
@@ -786,13 +786,13 @@ const CATEGORY_CONTENT_DATA: Record<string, CategoryContentData> = {
       bio: 'Board-certified veterinary nutritionist specializing in feline dietary needs and premium cat food.'
     },
     brands: ['Smalls', 'The Farmer\'s Dog', 'Nom Nom', 'Ollie', 'Open Farm'],
-    comparisonHeaders: ['Brand', 'Price/Day', 'Food Type', 'Delivery Frequency', 'Key Features'],
+    comparisonHeaders: ['Brand', 'Food Type', 'Delivery Frequency', 'Key Features'],
     comparisonRows: [
-      ['Smalls', '$2-4/day', 'Fresh/Freeze-Dried', 'Bi-weekly', 'Human-Grade, Cat-Specific'],
-      ['Nom Nom', '$3-6/day', 'Fresh Cooked', 'Weekly', 'Vet-Formulated, Portioned'],
-      ['Ollie', '$2-5/day', 'Fresh Cooked', 'Bi-weekly', 'Human-Grade, Custom Recipes'],
-      ['The Farmer\'s Dog', '$2-6/day', 'Fresh Cooked', 'Bi-weekly', 'Human-Grade, USDA Certified'],
-      ['Open Farm', '$1-3/day', 'Dry/Wet', 'Monthly', 'Ethically Sourced, Sustainable']
+      ['Smalls', 'Fresh/Freeze-Dried', 'Bi-weekly', 'Human-Grade, Cat-Specific'],
+      ['Nom Nom', 'Fresh Cooked', 'Weekly', 'Vet-Formulated, Portioned'],
+      ['Ollie', 'Fresh Cooked', 'Bi-weekly', 'Human-Grade, Custom Recipes'],
+      ['The Farmer\'s Dog', 'Fresh Cooked', 'Bi-weekly', 'Human-Grade, USDA Certified'],
+      ['Open Farm', 'Dry/Wet', 'Monthly', 'Ethically Sourced, Sustainable']
     ],
     imageAltTemplates: ['cat food delivery {keyword}', 'fresh cat food {keyword}', 'premium cat food subscription {keyword}'],
     imageCaptions: ['Fresh cat food delivered to your door.', 'Premium cat nutrition made easy.', 'Healthy meals for your feline friend.'],
@@ -819,13 +819,13 @@ const CATEGORY_CONTENT_DATA: Record<string, CategoryContentData> = {
       bio: 'Professional cat care specialist with expertise in feline wellness and product recommendations.'
     },
     brands: ['Top Brand 1', 'Top Brand 2', 'Top Brand 3', 'Top Brand 4', 'Top Brand 5'],
-    comparisonHeaders: ['Brand', 'Price', 'Features', 'Quality', 'Rating'],
+    comparisonHeaders: ['Brand', 'Features', 'Quality', 'Rating'],
     comparisonRows: [
-      ['Top Brand 1', '$50-100', 'Premium Features', 'High', '4.8/5'],
-      ['Top Brand 2', '$40-80', 'Standard Features', 'Good', '4.5/5'],
-      ['Top Brand 3', '$60-120', 'Advanced Features', 'High', '4.7/5'],
-      ['Top Brand 4', '$30-60', 'Basic Features', 'Standard', '4.2/5'],
-      ['Top Brand 5', '$70-150', 'Pro Features', 'Premium', '4.9/5']
+      ['Top Brand 1', 'Premium Features', 'High', '4.8/5'],
+      ['Top Brand 2', 'Standard Features', 'Good', '4.5/5'],
+      ['Top Brand 3', 'Advanced Features', 'High', '4.7/5'],
+      ['Top Brand 4', 'Basic Features', 'Standard', '4.2/5'],
+      ['Top Brand 5', 'Pro Features', 'Premium', '4.9/5']
     ],
     imageAltTemplates: ['cat product {keyword}', 'cat care {keyword}', 'cat supplies {keyword}'],
     imageCaptions: ['Quality cat products for your feline.', 'Expert-recommended cat supplies.', 'The best in cat care.'],
@@ -917,7 +917,6 @@ async function fetchAmazonProductsForKeyword(keyword: string, category: string =
 
     const comparisonRows = products.map(p => [
       p.brand ? `${p.name} by ${p.brand}` : p.name,
-      p.listPrice && p.listPrice !== p.price ? `${p.price} (was ${p.listPrice})` : p.price,
       p.features,
       p.reviewCount > 0 ? `${p.rating} (${p.reviewCount.toLocaleString()} reviews)` : p.rating,
       p.amazonSearch
@@ -2598,25 +2597,36 @@ function buildArticleHtml(
       h.toLowerCase().includes('amazon') || h.toLowerCase().includes('buy') || h.toLowerCase().includes('link')
     );
     
-    // Build headers - replace Amazon Search with "Buy Now" column
+    // Build headers - replace Amazon Search with "View on Amazon" column
     const displayHeaders = hasAmazonColumn 
-      ? [...article.comparisonTable.headers.slice(0, -1), 'Buy Now']
+      ? [...article.comparisonTable.headers.slice(0, -1), 'View on Amazon']
       : article.comparisonTable.headers;
     
     const pickItems = article.comparisonTable.rows.map((row: any, idx: number) => {
       const rowArray = Array.isArray(row) ? row : (typeof row === 'string' ? [row] : Object.values(row || {}));
       if (!rowArray.length) return '';
 
-      const productName = String(rowArray[0] || '').replace(/\.{3,}$/, '');
+      // Truncate product name to first meaningful part (before "by BRAND" or after 80 chars)
+      let productName = String(rowArray[0] || '').replace(/\.{3,}$/, '');
+      if (productName.length > 80) {
+        const byIdx = productName.indexOf(' by ');
+        productName = byIdx > 20 ? productName.substring(0, byIdx) : productName.substring(0, 80).replace(/\s+\S*$/, '…');
+      }
       const price = String(rowArray[1] || '');
-      const features = String(rowArray[2] || '');
+      // Truncate features: take first sentence/phrase, max 120 chars
+      let features = String(rowArray[2] || '');
+      if (features.length > 120) {
+        // Split on semicolons (Amazon feature separators) and take first one
+        const firstFeature = features.split(/[;]/)[0].trim();
+        features = firstFeature.length > 120 ? firstFeature.substring(0, 120).replace(/\s+\S*$/, '…') : firstFeature;
+      }
       const rating = String(rowArray[3] || '');
 
       let amazonBtnHtml = '';
       if (hasAmazonColumn && rowArray.length >= 5) {
         const amazonSearch = rowArray[rowArray.length - 1] || String(rowArray[0]).replace(/\s+/g, '+');
         const amazonUrl = 'https://www.amazon.com/s?k=' + encodeURIComponent(String(amazonSearch).replace(/\+/g, ' ')) + '&tag=' + amazonTag;
-        amazonBtnHtml = '<a href="' + amazonUrl + '" target="_blank" rel="nofollow sponsored" class="amazon-btn">Buy Now</a>';
+        amazonBtnHtml = '<a href="' + amazonUrl + '" target="_blank" rel="nofollow sponsored" class="amazon-btn">View on Amazon</a>';
       }
 
       const ratingNum = parseFloat(rating) || 0;
@@ -2625,13 +2635,12 @@ function buildArticleHtml(
 
       const ratingHtml = ratingNum > 0 ? '<span class="pick-rating"><span class="stars">' + starsHtml + '</span> ' + rating + '</span>' : '';
       const featuresHtml = features && features !== 'Premium quality' ? '<span class="pick-features">' + features + '</span>' : '';
-      const priceHtml = price && price !== 'Price not available' ? '<span class="pick-price">' + price + '</span>' : '';
 
       return '<li class="top-pick-item">' +
         '<span class="pick-rank">' + (idx + 1) + '</span>' +
         '<div class="pick-info">' +
           '<p class="pick-name">' + productName + '</p>' +
-          '<div class="pick-meta">' + ratingHtml + featuresHtml + priceHtml + '</div>' +
+          '<div class="pick-meta">' + ratingHtml + featuresHtml + '</div>' +
         '</div>' +
         amazonBtnHtml +
       '</li>';
@@ -2905,7 +2914,6 @@ article *{max-width:100%}
 .pick-rating{display:inline-flex;align-items:center;gap:4px;font-size:13px;color:#d69e2e;font-weight:600}
 .pick-rating .stars{color:#d69e2e}
 .pick-features{font-size:13px;color:#718096}
-.pick-price{font-size:13px;color:#4a5568;font-weight:600}
 .amazon-btn{display:inline-flex;align-items:center;gap:6px;background:linear-gradient(180deg,#ff9900 0%,#e47911 100%);color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px;border:none;box-shadow:0 3px 10px rgba(255,153,0,0.3);transition:all 0.3s ease;white-space:nowrap;flex-shrink:0}
 .amazon-btn:hover{background:linear-gradient(180deg,#ffad33 0%,#ff9900 100%);transform:translateY(-1px);box-shadow:0 5px 16px rgba(255,153,0,0.4);text-decoration:none;color:#fff}
 .amazon-btn::before{content:'';display:inline-block;width:18px;height:18px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'%3E%3Cpath d='M15.75 10.5V6a3.75 3.75 0 1 0-7.5 0v4.5m11.356-1.993 1.263 12c.07.665-.45 1.243-1.119 1.243H4.25a1.125 1.125 0 0 1-1.12-1.243l1.264-12A1.125 1.125 0 0 1 5.513 7.5h12.974c.576 0 1.059.435 1.119 1.007ZM8.625 10.5a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm7.5 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z'/%3E%3C/svg%3E");background-size:contain;background-repeat:no-repeat}
@@ -3505,29 +3513,85 @@ interface ArticleData {
 }
 
 /**
- * Normalize literal \n escape sequences in article content fields.
- * AI models (especially smaller ones like Llama/Mistral) sometimes output double-escaped
- * \\n in JSON, which after JSON.parse() becomes the literal text "\n" instead of a real
- * newline. This converts those to proper HTML paragraph/line breaks before HTML assembly.
+ * Normalize article content fields into proper HTML paragraphs.
+ *
+ * AI models return plain text strings in JSON. After JSON.parse() the content may contain:
+ *   1. Real newlines (\n) — the most common case
+ *   2. Literal escaped sequences (the two-char text \n) — from double-escaping bugs
+ *   3. No newlines at all — one giant block of text
+ *
+ * This function handles all three cases and wraps the result in <p> tags so the
+ * HTML template doesn't need to. Every long-form content field gets proper paragraphs.
  */
 function normalizeArticleContent(article: ArticleData): ArticleData {
-  const fix = (s: string) => s
-    .replace(/\\n\\n/g, '</p><p>')
-    .replace(/\\n/g, '<br>')
-    .replace(/\\r/g, '')
-    .replace(/\\t/g, ' ');
+  const toParagraphs = (s: string): string => {
+    if (!s || s.length < 20) return s;
 
-  if (article.introduction) article.introduction = fix(article.introduction);
-  if (article.conclusion) article.conclusion = fix(article.conclusion);
-  if (article.quickAnswer) article.quickAnswer = fix(article.quickAnswer);
-  if (article.definitionSnippet) article.definitionSnippet = fix(article.definitionSnippet);
+    // If content already contains <p> tags, leave it alone
+    if (/<p[\s>]/i.test(s)) return s;
+
+    let text = s
+      // Step 1: Normalize literal escape sequences (double-escaped by AI)
+      .replace(/\\r\\n/g, '\n')
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '')
+      .replace(/\\t/g, ' ')
+      // Step 2: Normalize real carriage returns
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '');
+
+    // Step 3: Split on double+ newlines into paragraphs
+    const paragraphs = text
+      .split(/\n\s*\n/)
+      .map(p => p.trim())
+      .filter(p => p.length > 0);
+
+    // If we only got 1 chunk but it's long (500+ chars), try splitting on single
+    // newlines as a fallback — many AI models use single newlines between paragraphs
+    if (paragraphs.length === 1 && paragraphs[0].length > 500) {
+      const singleSplit = text
+        .split(/\n/)
+        .map(p => p.trim())
+        .filter(p => p.length > 30); // Only keep substantial lines
+      if (singleSplit.length > 1) {
+        return singleSplit.map(p => `<p>${p}</p>`).join('\n');
+      }
+    }
+
+    // If still just one big block (no newlines at all), try splitting on sentence
+    // boundaries to create ~150-word paragraphs for readability
+    if (paragraphs.length === 1 && paragraphs[0].length > 800) {
+      const words = paragraphs[0].split(/\s+/);
+      const chunks: string[] = [];
+      let current: string[] = [];
+      for (const word of words) {
+        current.push(word);
+        // Break at sentence boundaries near 120-180 word marks
+        if (current.length >= 120 && /[.!?]$/.test(word)) {
+          chunks.push(current.join(' '));
+          current = [];
+        }
+      }
+      if (current.length > 0) chunks.push(current.join(' '));
+      if (chunks.length > 1) {
+        return chunks.map(p => `<p>${p}</p>`).join('\n');
+      }
+    }
+
+    return paragraphs.map(p => `<p>${p}</p>`).join('\n');
+  };
+
+  if (article.introduction) article.introduction = toParagraphs(article.introduction);
+  if (article.conclusion) article.conclusion = toParagraphs(article.conclusion);
+  if (article.quickAnswer) article.quickAnswer = toParagraphs(article.quickAnswer);
+  if (article.definitionSnippet) article.definitionSnippet = toParagraphs(article.definitionSnippet);
   if (article.sections) article.sections.forEach(s => {
-    s.content = fix(s.content);
-    if (s.subsections) s.subsections.forEach(sub => { sub.content = fix(sub.content); });
+    s.content = toParagraphs(s.content);
+    if (s.subsections) s.subsections.forEach(sub => { sub.content = toParagraphs(sub.content); });
   });
-  if (article.faqs) article.faqs.forEach(f => { f.answer = fix(f.answer); });
-  if (article.keyTakeaways) article.keyTakeaways = article.keyTakeaways.map(fix);
-  if (article.keyFacts) article.keyFacts = article.keyFacts.map(fix);
+  if (article.faqs) article.faqs.forEach(f => { f.answer = toParagraphs(f.answer); });
+  if (article.keyTakeaways) article.keyTakeaways = article.keyTakeaways.map(t => t.replace(/\\n/g, ' ').replace(/\\r/g, '').replace(/\\t/g, ' '));
+  if (article.keyFacts) article.keyFacts = article.keyFacts.map(t => t.replace(/\\n/g, ' ').replace(/\\r/g, '').replace(/\\t/g, ' '));
   return article;
 }
 
@@ -3535,47 +3599,105 @@ function normalizeArticleContent(article: ArticleData): ArticleData {
  * Run Harper grammar checker on article text fields before HTML assembly.
  * Auto-applies the first suggestion for each error (spelling, grammar, punctuation).
  * Harper is rule-based (not AI), runs via WASM, <10ms per field, zero network calls.
+ *
+ * IMPORTANT: Harper must run BEFORE normalizeArticleContent wraps text in <p> tags,
+ * because Harper's span positions are for plain text, not HTML.
  */
 let _harperLinter: any = null;
+let _harperInitFailed = false;
 async function getHarperLinter() {
+  // If init already failed, don't retry every article — log once and skip
+  if (_harperInitFailed) return null;
+
   if (!_harperLinter) {
-    const harper = await import('harper.js');
-    _harperLinter = new harper.LocalLinter({
-      binary: harper.binary,
-      dialect: harper.Dialect.American,
-    });
+    try {
+      const harper = await import('harper.js');
+      if (!harper.LocalLinter) {
+        throw new Error('harper.js module loaded but LocalLinter export is missing');
+      }
+      if (!harper.binary) {
+        throw new Error('harper.js module loaded but binary (WASM) export is missing');
+      }
+      _harperLinter = new harper.LocalLinter({
+        binary: harper.binary,
+        dialect: harper.Dialect?.American ?? 0,
+      });
+      // Pre-warm the WASM module so first lint isn't slow
+      await _harperLinter.setup();
+      console.log('[Harper] ✅ Grammar checker initialized (WASM loaded)');
+    } catch (initError: any) {
+      _harperInitFailed = true;
+      console.error(`[Harper] ❌ Initialization FAILED — grammar checking disabled for this process`);
+      console.error(`[Harper] Error: ${initError.message}`);
+      console.error(`[Harper] Stack: ${initError.stack?.split('\n').slice(0, 3).join('\n')}`);
+      return null;
+    }
   }
   return _harperLinter;
 }
 
 async function grammarCheckArticle(article: ArticleData): Promise<ArticleData> {
-  try {
-    const linter = await getHarperLinter();
-    let totalFixes = 0;
+  const linter = await getHarperLinter();
+  if (!linter) return article; // Harper unavailable — skip silently (already logged at init)
 
-    const fixText = async (text: string): Promise<string> => {
-      if (!text || text.length < 10) return text;
-      const lints = await linter.lint(text);
-      if (lints.length === 0) return text;
+  let totalFixes = 0;
+
+  const fixText = async (text: string): Promise<string> => {
+    if (!text || text.length < 10) return text;
+
+    // Strip HTML tags before linting so span positions match the plain text.
+    // After fixing, we put the tags back by operating on the original.
+    const plainText = text.replace(/<[^>]*>/g, '');
+    if (plainText.length < 10) return text;
+
+    try {
+      const lints = await linter.lint(plainText);
+      if (!lints || lints.length === 0) return text;
 
       // Apply fixes in reverse order so span positions stay valid
       const fixes = lints
-        .filter((l: any) => l.suggestion_count() > 0)
-        .map((l: any) => ({
-          start: l.span().start,
-          end: l.span().end,
-          replacement: l.suggestions()[0].get_replacement_text(),
-        }))
+        .filter((l: any) => {
+          try { return l.suggestion_count() > 0; } catch { return false; }
+        })
+        .map((l: any) => {
+          try {
+            return {
+              start: l.span().start,
+              end: l.span().end,
+              replacement: l.suggestions()[0].get_replacement_text(),
+            };
+          } catch { return null; }
+        })
+        .filter(Boolean)
         .sort((a: any, b: any) => b.start - a.start);
 
-      let result = text;
+      if (fixes.length === 0) return text;
+
+      // If text has no HTML, apply directly
+      if (text === plainText) {
+        let result = text;
+        for (const fix of fixes) {
+          result = result.slice(0, fix!.start) + fix!.replacement + result.slice(fix!.end);
+          totalFixes++;
+        }
+        return result;
+      }
+
+      // Text has HTML — apply fixes to plain text, then return fixed version
+      // (we can't perfectly map spans back to HTML, so lint the plain version)
+      let result = plainText;
       for (const fix of fixes) {
-        result = result.slice(0, fix.start) + fix.replacement + result.slice(fix.end);
+        result = result.slice(0, fix!.start) + fix!.replacement + result.slice(fix!.end);
         totalFixes++;
       }
       return result;
-    };
+    } catch (lintError: any) {
+      console.warn(`[Harper] ⚠️ Lint failed on text (${text.length} chars): ${lintError.message}`);
+      return text; // Return original on per-field failure
+    }
+  };
 
+  try {
     if (article.introduction) article.introduction = await fixText(article.introduction);
     if (article.conclusion) article.conclusion = await fixText(article.conclusion);
     if (article.quickAnswer) article.quickAnswer = await fixText(article.quickAnswer);
@@ -3604,9 +3726,12 @@ async function grammarCheckArticle(article: ArticleData): Promise<ArticleData> {
 
     if (totalFixes > 0) {
       console.log(`[Harper] ✅ Auto-fixed ${totalFixes} grammar/spelling issues`);
+    } else {
+      console.log(`[Harper] ✓ No grammar issues found`);
     }
   } catch (error: any) {
-    console.warn(`[Harper] ⚠️ Grammar check skipped: ${error.message}`);
+    console.error(`[Harper] ❌ Grammar check failed: ${error.message}`);
+    console.error(`[Harper] Stack: ${error.stack?.split('\n').slice(0, 3).join('\n')}`);
   }
   return article;
 }
@@ -3925,8 +4050,9 @@ Return ONLY valid JSON (no markdown code blocks, no explanation before/after):
       })
       .replace(/\n\s*\n/g, '\n'); // Collapse multiple newlines
     
-    let article = normalizeArticleContent(JSON.parse(sanitizedJson) as ArticleData);
-    article = await grammarCheckArticle(article);
+    let article = JSON.parse(sanitizedJson) as ArticleData;
+    article = await grammarCheckArticle(article);  // Harper runs first on plain text
+    article = normalizeArticleContent(article);     // Then wrap in <p> tags
     console.log(`✅ [Copilot CLI] Generated: ${article.title}`);
 
     // Enforce SEO limits - truncate title and meta description
@@ -4286,8 +4412,8 @@ Return ONLY valid JSON (no markdown code blocks):
         throw parseError;
       }
     }
-    article = normalizeArticleContent(article);
-    article = await grammarCheckArticle(article);
+    article = await grammarCheckArticle(article);  // Harper runs first on plain text
+    article = normalizeArticleContent(article);     // Then wrap in <p> tags
     console.log(`✅ [OpenRouter] Generated: ${article.title}`);
 
     // Enforce SEO limits - truncate title and meta description
@@ -4708,7 +4834,17 @@ let recentArticles: Array<{
   liveUrl: string | null;
   skillScore?: number;
   deployAction?: 'deploy' | 'review' | 'optimize' | 'reject';
+  category?: string;
 }> = [];
+let recentArticlesHydrated = false;
+
+// Cache for all-articles endpoint (avoid hammering KV)
+let allArticlesCache: { data: any; timestamp: number } | null = null;
+const ALL_ARTICLES_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+
+// Cache for sitemap-all endpoint
+let sitemapAllCache: { data: any; timestamp: number } | null = null;
+const SITEMAP_ALL_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 // Activity log for detailed real-time updates
 interface ActivityLogEntry {
@@ -4750,6 +4886,12 @@ let stats = {
   pending: ALL_KEYWORDS.length,
   percentComplete: '0.0'
 };
+
+// Add startup log entry so the activity log is never blank after restart
+addActivityLog('info', `V3 Engine started at ${new Date().toISOString().replace('T', ' ').slice(0, 19)} UTC`, {
+  totalKeywords: ALL_KEYWORDS.length,
+  version: 'V3'
+});
 
 // Session Health tracking (cockpit banner data)
 interface SessionHealth {
@@ -5648,9 +5790,52 @@ router.post('/batch', async (req: Request, res: Response) => {
 });
 
 /**
- * Get recent articles
+ * Get recent articles - hydrates from KV on first call if empty
  */
 router.get('/recent', async (_req: Request, res: Response) => {
+  // Hydrate from KV on first call after restart
+  if (recentArticles.length === 0 && !recentArticlesHydrated) {
+    recentArticlesHydrated = true;
+    try {
+      const allCategories = await getAllV3Categories();
+      const hydrated: typeof recentArticles = [];
+
+      // Fetch from each category (batches of 5)
+      const batchSize = 5;
+      for (let i = 0; i < allCategories.length; i += batchSize) {
+        const batch = allCategories.slice(i, i + batchSize);
+        const results = await Promise.all(
+          batch.map(async (category) => {
+            const kvPrefix = `${category}:`;
+            const slugs = await fetchExistingArticleSlugsForCategory(kvPrefix);
+            return slugs.map(slug => ({
+              keyword: slug.split('-').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
+              slug,
+              title: slug.split('-').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
+              wordCount: 0,
+              date: new Date().toISOString(),
+              deployed: true,
+              liveUrl: `https://catsluvus.com/${category}/${slug}`,
+              category
+            }));
+          })
+        );
+        for (const categoryArticles of results) {
+          hydrated.push(...categoryArticles);
+        }
+      }
+
+      // Take the most recent 50 (reverse so newest categories appear first)
+      recentArticles = hydrated.slice(0, 50);
+      addActivityLog('info', `Hydrated ${hydrated.length} articles from ${allCategories.length} categories in KV`, {
+        categories: allCategories.length,
+        articles: hydrated.length
+      });
+    } catch (error: any) {
+      console.error('[SEO-V3] Failed to hydrate recent articles from KV:', error.message);
+    }
+  }
+
   res.json({
     articles: recentArticles,
     count: recentArticles.length
@@ -5730,6 +5915,147 @@ router.get('/sitemap', async (_req: Request, res: Response) => {
       error: error.message || 'Failed to fetch sitemap',
       urls: [],
       count: 0
+    });
+  }
+});
+
+/**
+ * Get all articles from ALL V3 categories in KV
+ * Returns article slugs with category, URL, and title
+ */
+router.get('/all-articles', async (req: Request, res: Response) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 200, 1000);
+
+    // Check cache
+    if (allArticlesCache && (Date.now() - allArticlesCache.timestamp) < ALL_ARTICLES_CACHE_TTL) {
+      const cached = allArticlesCache.data;
+      return res.json({
+        articles: cached.articles.slice(0, limit),
+        total: cached.total,
+        categories: cached.categories,
+        cached: true
+      });
+    }
+
+    const allCategories = await getAllV3Categories();
+    const articles: Array<{ category: string; slug: string; title: string; url: string }> = [];
+
+    // Fetch slugs from each category in parallel (batches of 5 to avoid rate limits)
+    const batchSize = 5;
+    for (let i = 0; i < allCategories.length; i += batchSize) {
+      const batch = allCategories.slice(i, i + batchSize);
+      const results = await Promise.all(
+        batch.map(async (category) => {
+          const kvPrefix = `${category}:`;
+          const slugs = await fetchExistingArticleSlugsForCategory(kvPrefix);
+          return slugs.map(slug => ({
+            category,
+            slug,
+            title: slug.split('-').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
+            url: `https://catsluvus.com/${category}/${slug}`
+          }));
+        })
+      );
+      for (const categoryArticles of results) {
+        articles.push(...categoryArticles);
+      }
+    }
+
+    // Sort by category then slug
+    articles.sort((a, b) => a.category.localeCompare(b.category) || a.slug.localeCompare(b.slug));
+
+    const result = {
+      articles,
+      total: articles.length,
+      categories: allCategories
+    };
+
+    // Cache result
+    allArticlesCache = { data: result, timestamp: Date.now() };
+
+    res.json({
+      articles: articles.slice(0, limit),
+      total: articles.length,
+      categories: allCategories,
+      cached: false
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      error: error.message || 'Failed to fetch all articles',
+      articles: [],
+      total: 0,
+      categories: []
+    });
+  }
+});
+
+/**
+ * Get sitemap URLs from ALL V3 categories (not just the active one)
+ * Fetches and combines sitemaps from all discovered categories
+ */
+router.get('/sitemap-all', async (_req: Request, res: Response) => {
+  try {
+    // Check cache
+    if (sitemapAllCache && (Date.now() - sitemapAllCache.timestamp) < SITEMAP_ALL_CACHE_TTL) {
+      return res.json({ ...sitemapAllCache.data, cached: true });
+    }
+
+    const allCategories = await getAllV3Categories();
+    const allUrls: Array<{ url: string; slug: string; title: string; category: string }> = [];
+
+    // Fetch sitemaps in parallel (batches of 5)
+    const batchSize = 5;
+    for (let i = 0; i < allCategories.length; i += batchSize) {
+      const batch = allCategories.slice(i, i + batchSize);
+      const results = await Promise.all(
+        batch.map(async (category) => {
+          try {
+            const sitemap = await fetchCurrentSitemap(category);
+            if (!sitemap) return [];
+
+            const urlMatches = sitemap.match(/<loc>([^<]+)<\/loc>/g) || [];
+            return urlMatches.map(match => {
+              const url = match.replace(/<\/?loc>/g, '');
+              const slugMatch = url.match(new RegExp(`\\/${category}\\/([^/]+)\\/?$`));
+              const slug = slugMatch ? slugMatch[1] : url;
+              return {
+                url,
+                slug,
+                title: slug.split('-').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
+                category
+              };
+            });
+          } catch {
+            return [];
+          }
+        })
+      );
+      for (const categoryUrls of results) {
+        allUrls.push(...categoryUrls);
+      }
+    }
+
+    // Sort by category then slug
+    allUrls.sort((a, b) => a.category.localeCompare(b.category) || a.slug.localeCompare(b.slug));
+
+    const result = {
+      urls: allUrls,
+      count: allUrls.length,
+      categories: allCategories,
+      fetchedAt: new Date().toISOString()
+    };
+
+    // Cache result
+    sitemapAllCache = { data: result, timestamp: Date.now() };
+
+    res.json({ ...result, cached: false });
+  } catch (error: any) {
+    res.status(500).json({
+      error: error.message || 'Failed to fetch all sitemaps',
+      urls: [],
+      count: 0,
+      categories: []
     });
   }
 });
@@ -7907,7 +8233,6 @@ PROGRAMMATIC SEO QUALITY GATES (MANDATORY):
       article = JSON.parse(sanitizedJson) as ArticleData;
     } catch (jsonErr: any) {
       const cleaned = sanitizedJson
-        .replace(/\\n/g, ' ')
         .replace(/\\r/g, '')
         .replace(/\\t/g, ' ')
         .replace(/,\s*}/g, '}')
@@ -7915,8 +8240,8 @@ PROGRAMMATIC SEO QUALITY GATES (MANDATORY):
       article = JSON.parse(cleaned) as ArticleData;
     }
 
-    article = normalizeArticleContent(article);
-    article = await grammarCheckArticle(article);
+    article = await grammarCheckArticle(article);  // Harper runs first on plain text
+    article = normalizeArticleContent(article);     // Then wrap in <p> tags
 
     if (!article.title) {
       throw new Error('Invalid article JSON - missing title');
