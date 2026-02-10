@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import * as cheerio from 'cheerio';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import * as path from 'path';
 import { secrets } from '../services/doppler-secrets';
 import { generateWithCloudflareAI, isCloudflareAIConfigured } from '../services/cloudflare-ai-client';
@@ -595,13 +595,20 @@ interface YouTubeSearchResult {
  * Search YouTube for relevant videos
  * Calls Python script that uses youtube_search library (no API key needed)
  */
-function searchYouTubeVideo(keyword: string): YouTubeSearchResult {
+async function searchYouTubeVideo(keyword: string): Promise<YouTubeSearchResult> {
   try {
     const scriptPath = path.resolve(process.cwd(), 'src/services/youtube-search.py');
-    const result = execSync(`python3 "${scriptPath}" "${keyword}"`, {
-      encoding: 'utf-8',
-      timeout: 15000,
-      maxBuffer: 1024 * 1024
+    const result = await new Promise<string>((resolve, reject) => {
+      const child = spawn('python3', [scriptPath, keyword], {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
+      child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('YouTube search timeout after 15s')); }, 15000);
+      child.on('close', (code) => { clearTimeout(timer); if (code === 0) resolve(stdout); else reject(new Error(`YouTube search exited ${code}: ${stderr}`)); });
+      child.on('error', (err) => { clearTimeout(timer); reject(err); });
     });
     return JSON.parse(result.trim());
   } catch (error: any) {
@@ -1244,100 +1251,100 @@ function isFunnyVideoValid(video: YouTubeVideo): boolean {
   return true;
 }
 
-function searchVideoFunnel(keyword: string, category: string): VideoFunnelResult {
+async function searchVideoFunnel(keyword: string, category: string): Promise<VideoFunnelResult> {
   const categorySlug = category.toLowerCase().replace(/\s+/g, '-');
-  
+
   const level1Query = keyword;
   console.log(`[Video Funnel] L1: "${level1Query}"`);
-  let result = searchYouTubeVideo(level1Query);
+  let result = await searchYouTubeVideo(level1Query);
   if (result.success && result.videos?.length) {
     const relevant = result.videos.find(v => isVideoRelevant(v, categorySlug));
     if (relevant) {
       return { video: relevant, level: 1, searchQuery: level1Query, fallbackUsed: false };
     }
   }
-  
+
   const categoryTerms = categorySlug.replace(/-/g, ' ');
   const level2Query = `${categoryTerms} ${keyword} review`;
   console.log(`[Video Funnel] L2: "${level2Query}"`);
-  result = searchYouTubeVideo(level2Query);
+  result = await searchYouTubeVideo(level2Query);
   if (result.success && result.videos?.length) {
     const relevant = result.videos.find(v => isVideoRelevant(v, categorySlug));
     if (relevant) {
       return { video: relevant, level: 2, searchQuery: level2Query, fallbackUsed: false };
     }
   }
-  
+
   const categorySearchTerms = CATEGORY_SEARCH_TERMS[categorySlug] || CATEGORY_SEARCH_TERMS['cat-health'] || [`cat care tips ${CURRENT_YEAR}`];
   const level3Query = categorySearchTerms[0];
   console.log(`[Video Funnel] L3: "${level3Query}"`);
-  result = searchYouTubeVideo(level3Query);
+  result = await searchYouTubeVideo(level3Query);
   if (result.success && result.videos?.length) {
     const relevant = result.videos.find(v => isVideoRelevant(v, categorySlug));
     if (relevant) {
       return { video: relevant, level: 3, searchQuery: level3Query, fallbackUsed: false };
     }
   }
-  
+
   let broadTopic = 'cat care';
   if (categorySlug.includes('food') || categorySlug.includes('nutrition')) broadTopic = 'cat feeding guide';
   else if (categorySlug.includes('tree') || categorySlug.includes('furniture') || categorySlug.includes('condo')) broadTopic = 'cat furniture';
   else if (categorySlug.includes('dna') || categorySlug.includes('breed')) broadTopic = 'cat breeds explained';
   else if (categorySlug.includes('health')) broadTopic = 'cat wellness tips';
   else if (categorySlug.includes('groom')) broadTopic = 'cat grooming';
-  
+
   const level4Query = `${broadTopic} guide ${CURRENT_YEAR}`;
   console.log(`[Video Funnel] L4: "${level4Query}"`);
-  result = searchYouTubeVideo(level4Query);
+  result = await searchYouTubeVideo(level4Query);
   if (result.success && result.videos?.length) {
     const relevant = result.videos.find(v => isVideoRelevant(v, categorySlug));
     if (relevant) {
       return { video: relevant, level: 4, searchQuery: level4Query, fallbackUsed: false };
     }
   }
-  
+
   const contextActions = FUNNY_CAT_CONTEXT_ACTIONS[categorySlug] || FUNNY_CAT_CONTEXT_ACTIONS['DEFAULT'];
   const funnyAction = contextActions[Math.floor(Math.random() * contextActions.length)];
   const level5Query = `funny cat ${funnyAction}`;
   console.log(`[Video Funnel] L5 (funny fallback): "${level5Query}"`);
-  result = searchYouTubeVideo(level5Query);
+  result = await searchYouTubeVideo(level5Query);
   if (result.success && result.videos?.length) {
     const video = result.videos.find(v => isFunnyVideoValid(v));
     if (video) {
       return { video, level: 5, searchQuery: level5Query, fallbackUsed: true };
     }
   }
-  
+
   const ultimateFallback = `funny cats compilation ${CURRENT_YEAR}`;
   console.log(`[Video Funnel] Ultimate fallback: "${ultimateFallback}"`);
-  result = searchYouTubeVideo(ultimateFallback);
+  result = await searchYouTubeVideo(ultimateFallback);
   if (result.success && result.videos?.length) {
     const video = result.videos.find(v => isFunnyVideoValid(v));
     if (video) {
       return { video, level: 5, searchQuery: ultimateFallback, fallbackUsed: true };
     }
   }
-  
+
   const lastResort = 'cute cats being cats';
   console.log(`[Video Funnel] Last resort: "${lastResort}"`);
-  result = searchYouTubeVideo(lastResort);
+  result = await searchYouTubeVideo(lastResort);
   if (result.success && result.videos?.length) {
     const video = result.videos.find(v => isFunnyVideoValid(v));
     if (video) {
       return { video, level: 5, searchQuery: lastResort, fallbackUsed: true };
     }
   }
-  
+
   const viralQueries = [
     'funniest cat videos viral',
     'most viewed cat videos all time',
     'viral cat videos millions views',
     'hilarious cats funny compilation'
   ];
-  
+
   for (const viralQuery of viralQueries) {
     console.log(`[Video Funnel] 🔥 Viral cat search: "${viralQuery}"`);
-    result = searchYouTubeVideo(viralQuery);
+    result = await searchYouTubeVideo(viralQuery);
     if (result.success && result.videos?.length) {
       const catVideos = result.videos.filter(v => CAT_REGEX.test(v.title));
       if (catVideos.length > 0) {
@@ -1348,7 +1355,7 @@ function searchVideoFunnel(keyword: string, category: string): VideoFunnelResult
       }
     }
   }
-  
+
   console.log(`[Video Funnel] ⚠️ No cat video found after all searches - this should never happen`);
   return { video: undefined, level: 0, searchQuery: '', fallbackUsed: false };
 }
@@ -1480,9 +1487,9 @@ const CLOUDFLARE_WORKER_NAME = 'petinsurance';
 // V3 has its own category tracking, independent from V2
 const CATEGORY_STATUS_PREFIX = 'v3:category:status:';
 
-// V3-EXCLUSIVE CATEGORIES - V3 only works on these, V2 works on others
-// This prevents V2 and V3 from competing on the same categories
-const V3_EXCLUSIVE_CATEGORIES = [
+// LEGACY V3 CATEGORIES - kept for route healing reference only
+// V3 now uses autonomous Copilot CLI discovery (no static list)
+const V3_LEGACY_CATEGORIES = [
   'cat-toys-interactive',
   'cat-grooming-tools',
   'cat-travel-accessories',
@@ -1494,6 +1501,34 @@ const V3_EXCLUSIVE_CATEGORIES = [
   'cat-calming-products',
   'cat-subscription-boxes'
 ];
+
+// V2 category status prefix - used to check what V2 has completed so V3 avoids overlap
+const V2_CATEGORY_STATUS_PREFIX = 'v2:category:status:';
+
+/**
+ * Get all V2 completed categories from KV to prevent V3 from overlapping
+ */
+async function getV2CompletedCategories(): Promise<string[]> {
+  const cfApiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
+  if (!cfApiToken) return [];
+
+  const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/keys?prefix=${V2_CATEGORY_STATUS_PREFIX}`;
+  try {
+    const res = await fetch(url, { headers: { 'Authorization': `Bearer ${cfApiToken}` } });
+    if (!res.ok) return [];
+    const data = await res.json() as any;
+    return (data.result || []).map((key: any) => key.name.replace(V2_CATEGORY_STATUS_PREFIX, ''));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Get all V3 categories ever worked on (from KV status keys) - dynamic, not hardcoded
+ */
+async function getAllV3Categories(): Promise<string[]> {
+  return await getAllCategoryStatusKeys();
+}
 
 // ============================================================================
 // V3 Category Status Tracking (Durable State in KV)
@@ -1569,20 +1604,33 @@ async function saveDiscoveryState(): Promise<void> {
   } catch {}
 }
 
-async function saveCategoryStatus(category: string, status: CategoryStatus): Promise<void> {
+async function saveCategoryStatus(category: string, status: CategoryStatus): Promise<boolean> {
   const cfApiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
-  if (!cfApiToken) return;
-  
+  if (!cfApiToken) {
+    console.error(`[SEO-V3] ❌ No CLOUDFLARE_API_TOKEN - cannot save category status for ${category}`);
+    return false;
+  }
+
   const url = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${CATEGORY_STATUS_PREFIX}${category}`;
   try {
-    await fetch(url, {
+    const res = await fetch(url, {
       method: 'PUT',
       headers: { 'Authorization': `Bearer ${cfApiToken}`, 'Content-Type': 'text/plain' },
       body: JSON.stringify(status)
     });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => 'unknown');
+      console.error(`[SEO-V3] ❌ KV PUT failed for ${category}: ${res.status} ${res.statusText} - ${errText}`);
+      addActivityLog('error', `[V3] KV save failed: ${category} (${res.status})`, { status: status.status });
+      return false;
+    }
+    console.log(`[SEO-V3] ✅ KV confirmed: ${CATEGORY_STATUS_PREFIX}${category} = ${status.status}`);
     addActivityLog('info', `[V3] Category status saved: ${category}`, { status: status.status, articles: status.articleCount });
+    return true;
   } catch (error: any) {
-    console.error(`[SEO-V3] Failed to save category status: ${error.message}`);
+    console.error(`[SEO-V3] ❌ Failed to save category status for ${category}: ${error.message}`);
+    addActivityLog('error', `[V3] KV save error: ${category} - ${error.message}`);
+    return false;
   }
 }
 
@@ -1674,65 +1722,46 @@ async function logDiscoveryError(reason: string): Promise<null> {
   return null;
 }
 
+/**
+ * Autonomous category discovery via Copilot CLI
+ * Discovers the next high-value cat category, excluding:
+ * - All V3 completed/in-progress categories
+ * - All V2 completed categories (prevents overlap)
+ */
 async function discoverNextCategory(): Promise<DiscoveredCategory | null> {
   if (!await canAttemptDiscovery()) {
     return logDiscoveryError('Discovery in cooldown period - wait for cooldown to expire');
   }
 
-  addActivityLog('info', '[V3] Selecting next category from V3-exclusive list...');
+  addActivityLog('info', '[V3] Discovering next category via Copilot CLI (autonomous)...');
 
-  // V3 uses its exclusive category list - no AI discovery needed
-  // This prevents overlap with V2 which discovers its own categories
-  const completedCategories = await getCompletedCategories();
+  // Get ALL categories to exclude: V3 completed + V2 completed
+  const v3Completed = await getCompletedCategories();
+  const v2Completed = await getV2CompletedCategories();
+  const v3InProgress = await getAllCategoryStatusKeys();
+  const allExcluded = [...new Set([...v3Completed, ...v2Completed, ...v3InProgress])];
+  const excludedList = allExcluded.join(', ') || 'none yet';
 
-  // Find the first V3-exclusive category that hasn't been completed
-  const availableCategory = V3_EXCLUSIVE_CATEGORIES.find(slug => !completedCategories.includes(slug));
-
-  if (!availableCategory) {
-    addActivityLog('info', '[V3] All V3-exclusive categories completed!');
-    return null;
-  }
-
-  // Convert slug to proper name
-  const categoryName = availableCategory
-    .split('-')
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
-
-  const category: DiscoveredCategory = {
-    name: categoryName,
-    slug: availableCategory,
-    estimatedKeywords: 25,
-    affiliatePotential: 'high',
-    reasoning: 'V3-exclusive category for Cloudflare AI generation'
-  };
-
-  await recordDiscoverySuccess();
-  addActivityLog('success', `[V3] Selected category: ${category.name} (V3-exclusive)`, category);
-  return category;
-}
-
-// Legacy Copilot discovery - kept for reference but not used
-async function discoverNextCategoryViaCopilot(): Promise<DiscoveredCategory | null> {
-  const completedCategories = await getCompletedCategories();
-  const completedList = completedCategories.join(', ') || 'none yet';
+  addActivityLog('info', `[V3] Excluding ${allExcluded.length} categories (V3: ${v3Completed.length} completed, V2: ${v2Completed.length} completed)`);
 
   const prompt = `You are a cat niche SEO researcher. Find the next high-value category for catsluvus.com.
 
-ALREADY COMPLETED CATEGORIES (do NOT suggest these):
-${completedList}
+ALREADY COMPLETED OR IN-PROGRESS CATEGORIES (do NOT suggest these):
+${excludedList}
 
 REQUIREMENTS:
 1. Must be cat-related (not dogs, not general pets)
 2. Must have affiliate potential (products to recommend)
-3. Must have 20+ keyword opportunities
+3. Must have 10+ keyword opportunities (we target 10 high-quality articles per cluster)
 4. Prioritize high commercial intent (buying keywords)
+5. Category slug should be descriptive (e.g., "cat-water-fountains", "cat-beds-blankets")
+6. Think about what cat owners actually buy on Amazon
 
 Return ONLY valid JSON (no markdown, no explanation):
 {
   "name": "Category Name",
   "slug": "category-slug",
-  "estimatedKeywords": 30,
+  "estimatedKeywords": 10,
   "affiliatePotential": "high",
   "reasoning": "Brief explanation"
 }`;
@@ -1743,17 +1772,18 @@ Return ONLY valid JSON (no markdown, no explanation):
       const jsonMatch = result.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const category = JSON.parse(jsonMatch[0]) as DiscoveredCategory;
-        if (completedCategories.includes(category.slug)) {
-          addActivityLog('warning', `[V3] Copilot suggested completed category: ${category.slug} - retrying discovery`);
+        // Check against ALL excluded categories
+        if (allExcluded.includes(category.slug)) {
+          addActivityLog('warning', `[V3] Copilot suggested excluded category: ${category.slug} - retrying`);
           await recordDiscoveryFailure();
-          return logDiscoveryError(`Copilot suggested already-completed category: ${category.slug}`);
+          return logDiscoveryError(`Copilot suggested already-used category: ${category.slug}`);
         }
         await recordDiscoverySuccess();
-        addActivityLog('success', `[V3] Discovered category: ${category.name}`, category);
+        addActivityLog('success', `[V3] 🎯 Autonomously discovered category: ${category.name} (${category.slug})`, category);
+        console.log(`[SEO-V3] ✅ Autonomous discovery: ${category.name} (${category.slug}) - ${category.reasoning}`);
         return category;
       }
     }
-    // No valid JSON found in response
     await recordDiscoveryFailure();
     return logDiscoveryError('Copilot response did not contain valid JSON');
   } catch (error: any) {
@@ -1767,7 +1797,7 @@ Return ONLY valid JSON (no markdown, no explanation):
 async function generateCategoryKeywords(category: DiscoveredCategory): Promise<string[]> {
   addActivityLog('info', `[V3] Generating keywords for: ${category.name}`);
   
-  const prompt = `Generate 30-50 SEO keywords for the "${category.name}" category on a cat website (catsluvus.com).
+  const prompt = `Generate exactly 10 SEO keywords for the "${category.name}" category on a cat website (catsluvus.com).
 
 REQUIREMENTS:
 1. Mix of informational and commercial intent
@@ -1775,6 +1805,7 @@ REQUIREMENTS:
 3. Focus on topics with affiliate potential
 4. Avoid generic terms like "cat" or "cats" alone
 5. Each keyword should be a complete search phrase
+6. Only 10 keywords - quality over quantity, each must be distinct and high-value
 
 Return ONLY a JSON array of keyword strings (no markdown, no explanation):
 ["keyword one", "keyword two", ...]`;
@@ -1785,14 +1816,23 @@ Return ONLY a JSON array of keyword strings (no markdown, no explanation):
       const jsonMatch = result.match(/\[[\s\S]*\]/);
       if (jsonMatch) {
         const keywords = JSON.parse(jsonMatch[0]) as string[];
+        console.log(`[SEO-V3] ✅ Copilot returned ${keywords.length} keywords for ${category.name}`);
         addActivityLog('success', `[V3] Generated ${keywords.length} keywords for ${category.name}`);
         return keywords;
+      } else {
+        console.error(`[SEO-V3] ⚠️ Copilot response had no JSON array for ${category.name}. Response preview: ${result.substring(0, 200)}`);
+        addActivityLog('warning', `[V3] Copilot returned non-JSON for ${category.name}`);
       }
+    } else {
+      console.error(`[SEO-V3] ⚠️ Copilot returned empty response for ${category.name}`);
+      addActivityLog('warning', `[V3] Copilot returned empty for ${category.name}`);
     }
   } catch (error: any) {
+    console.error(`[SEO-V3] ❌ Keyword generation failed for ${category.name}: ${error.message}`);
     addActivityLog('error', `[V3] Keyword generation failed: ${error.message}`);
   }
-  
+
+  console.log(`[SEO-V3] ⚠️ Returning empty keywords for ${category.name} - fallback will be used`);
   return [];
 }
 
@@ -2138,9 +2178,10 @@ async function fetchCrossCategoryArticlesForLinking(currentCategoryKvPrefix: str
 
   try {
     // V3-only cross-category linking (no V1 petinsurance - V3 separate from V1)
-    // Fetch articles from V3-exclusive categories (excluding current category)
-    const v3Categories = V3_EXCLUSIVE_CATEGORIES
-      .filter(cat => cat !== currentCategoryNormalized); // Exact match comparison
+    // Dynamically fetch all V3 categories from KV (no hardcoded list)
+    const allV3Cats = await getAllCategoryStatusKeys();
+    const v3Categories = allV3Cats
+      .filter(cat => cat !== currentCategoryNormalized); // Exclude current category
 
     for (const category of v3Categories.slice(0, 3)) { // Limit to 3 other categories
       const catUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/keys?prefix=${encodeURIComponent(category + ':')}&limit=20`;
@@ -2561,7 +2602,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;l
 /* NOTE: Navigation chrome (hamburger, nav, footer) injected by Worker HTMLRewriter */
 
 /* Main Content */
-main{padding-top:70px;overflow-x:hidden}
+main{padding-top:0;overflow-x:hidden}
 .container{max-width:720px;margin:0 auto;padding:40px 24px;overflow-wrap:break-word;word-wrap:break-word;overflow-x:hidden}
 
 /* Typography */
@@ -2899,13 +2940,11 @@ async function getGenerationQueueStatus(): Promise<{
  * The SDK's session management has issues, but the CLI's -p flag works correctly
  */
 async function generateWithCopilotCLI(prompt: string, timeout: number = 600000, maxRetries: number = 3): Promise<string> {
-  const { execSync } = require('child_process');
   const fs = require('fs');
 
-  // Get GitHub token from the correct config directory
+  // Get GitHub token from the correct config directory (fast, ~1s, OK to keep sync)
   let ghToken: string;
   try {
-    // Must exclude any existing GITHUB_TOKEN/GH_TOKEN env vars so gh CLI reads from config file
     const cleanEnv = { ...process.env };
     delete cleanEnv.GITHUB_TOKEN;
     delete cleanEnv.GH_TOKEN;
@@ -2946,18 +2985,39 @@ async function generateWithCopilotCLI(prompt: string, timeout: number = 600000, 
     console.log(`📝 Wrote prompt to ${promptFile} (attempt ${attempt}/${maxRetries})`);
 
     try {
-      // Use wrapper script that takes token as first arg and prompt file as second
       const wrapperScript = '/home/runner/workspace/ghl-marketplace-app/scripts/run-copilot.sh';
       const cmd = `${wrapperScript} "${ghToken}" "${promptFile}" --model gpt-4.1 --allow-all-tools --no-ask-user`;
 
-      console.log(`🚀 Executing Copilot CLI via wrapper (attempt ${attempt})...`);
+      console.log(`🚀 Executing Copilot CLI via async spawn (attempt ${attempt})...`);
 
-      const result = execSync(cmd, {
-        encoding: 'utf8',
-        timeout: timeout,
-        cwd: '/home/runner/workspace/ghl-marketplace-app',
-        shell: '/bin/bash',
-        maxBuffer: 50 * 1024 * 1024 // 50MB buffer for long responses
+      const result = await new Promise<string>((resolve, reject) => {
+        const child = spawn('bash', ['-c', cmd], {
+          cwd: '/home/runner/workspace/ghl-marketplace-app',
+          env: process.env,
+          stdio: ['pipe', 'pipe', 'pipe']
+        });
+
+        let stdout = '';
+        let stderr = '';
+        const maxBuffer = 50 * 1024 * 1024;
+
+        child.stdout.on('data', (data: Buffer) => {
+          stdout += data.toString();
+          if (stdout.length > maxBuffer) { child.kill('SIGKILL'); reject(new Error('Output exceeded max buffer')); }
+        });
+        child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL');
+          reject(new Error(`CLI timeout after ${timeout}ms`));
+        }, timeout);
+
+        child.on('close', (code) => {
+          clearTimeout(timer);
+          if (code === 0) resolve(stdout);
+          else reject(new Error(`CLI exited with code ${code}: ${stderr}`));
+        });
+        child.on('error', (err) => { clearTimeout(timer); reject(err); });
       });
 
       console.log(`✅ Got response (${result.length} chars)`);
@@ -2969,15 +3029,14 @@ async function generateWithCopilotCLI(prompt: string, timeout: number = 600000, 
       // Clean up prompt file
       try { fs.unlinkSync(promptFile); } catch (e) {}
 
-      // execSync throws on non-zero exit, capture stderr if available
-      const output = error.stdout?.toString() || error.stderr?.toString() || error.message;
+      const output = error.message || '';
       console.error(`❌ CLI Error (attempt ${attempt}):`, output);
 
       // Check if error is retryable
       const isRetryable = retryableErrors.some(e => output.toLowerCase().includes(e.toLowerCase()));
 
       if (isRetryable && attempt < maxRetries) {
-        const delay = Math.min(1000 * Math.pow(2, attempt), 30000); // Exponential backoff, max 30s
+        const delay = Math.min(1000 * Math.pow(2, attempt), 30000);
         console.log(`🔄 Retryable error detected, waiting ${delay}ms before retry...`);
         await new Promise(resolve => setTimeout(resolve, delay));
         lastError = new Error(`Copilot CLI failed: ${output}`);
@@ -3533,7 +3592,7 @@ Return ONLY valid JSON (no markdown code blocks, no explanation before/after):
     // Search for relevant YouTube video
     let video: YouTubeVideo | undefined;
     try {
-      const videoResult = searchYouTubeVideo(keyword);
+      const videoResult = await searchYouTubeVideo(keyword);
       if (videoResult.success && videoResult.videos && videoResult.videos.length > 0) {
         video = videoResult.videos[0];
         console.log(`🎬 [YouTube] Found video: "${video.title}" by ${video.channel}`);
@@ -3892,7 +3951,7 @@ Return ONLY valid JSON (no markdown code blocks):
     // Search for relevant YouTube video
     let video: YouTubeVideo | undefined;
     try {
-      const videoResult = searchYouTubeVideo(keyword);
+      const videoResult = await searchYouTubeVideo(keyword);
       if (videoResult.success && videoResult.videos && videoResult.videos.length > 0) {
         video = videoResult.videos[0];
         console.log(`🎬 [YouTube] Found video: "${video.title}" by ${video.channel}`);
@@ -5950,8 +6009,8 @@ router.post('/autonomous/start', async (req: Request, res: Response) => {
     // Set V3 autonomous flag (separate from legacy autonomousRunning)
     v3AutonomousRunning = true;
 
-    addActivityLog('info', `V3 Autonomous mode STARTED - using V3-exclusive categories`, {
-      categories: V3_EXCLUSIVE_CATEGORIES.slice(0, 3).join(', ') + '...'
+    addActivityLog('info', `V3 Autonomous mode STARTED - using Copilot CLI autonomous discovery`, {
+      mode: 'autonomous-copilot-discovery'
     });
 
     // Start V3 category-based generation (uses runV3AutonomousGeneration)
@@ -5961,8 +6020,8 @@ router.post('/autonomous/start', async (req: Request, res: Response) => {
       success: true,
       running: true,
       mode: 'v3-categories',
-      message: 'V3 autonomous generation started (exclusive categories)',
-      categories: V3_EXCLUSIVE_CATEGORIES
+      message: 'V3 autonomous generation started (Copilot CLI discovery)',
+      discoveryMode: 'autonomous-copilot-cli'
     });
   } else {
     // Legacy mode: use shared V2 keywords (for backwards compatibility)
@@ -6105,7 +6164,7 @@ router.get('/autonomous/status', async (_req: Request, res: Response) => {
           score: sortedPending[0].score,
           category: v3CategoryContext?.categorySlug
         } : null,
-        exclusiveCategories: V3_EXCLUSIVE_CATEGORIES
+        discoveryMode: 'autonomous-copilot-cli'
       });
     }
 
@@ -6309,8 +6368,9 @@ router.get('/list-routes', async (_req: Request, res: Response) => {
       r.pattern?.includes('catsluvus.com')
     );
 
-    // Check which V3 categories have routes
-    const v3CategoryRoutes = V3_EXCLUSIVE_CATEGORIES.map(cat => {
+    // Check which V3 categories have routes (dynamic from KV)
+    const allV3Cats = await getAllCategoryStatusKeys();
+    const v3CategoryRoutes = allV3Cats.map(cat => {
       const hasRoute = catsluvusRoutes.some((r: any) =>
         r.pattern?.includes(`/${cat}/`) || r.pattern?.includes(`/${cat}`)
       );
@@ -6326,7 +6386,8 @@ router.get('/list-routes', async (_req: Request, res: Response) => {
         script: r.script
       })),
       v3Categories: v3CategoryRoutes,
-      missingV3Routes: v3CategoryRoutes.filter(c => !c.hasRoute).map(c => c.category)
+      missingV3Routes: v3CategoryRoutes.filter(c => !c.hasRoute).map(c => c.category),
+      discoveryMode: 'autonomous-copilot-cli'
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -6334,13 +6395,14 @@ router.get('/list-routes', async (_req: Request, res: Response) => {
 });
 
 /**
- * Create routes for ALL V3 exclusive categories at once
+ * Create routes for ALL V3 categories (dynamically from KV)
  */
 router.post('/create-all-v3-routes', async (_req: Request, res: Response) => {
   try {
+    const allV3Cats = await getAllCategoryStatusKeys();
     const results: any[] = [];
 
-    for (const category of V3_EXCLUSIVE_CATEGORIES) {
+    for (const category of allV3Cats) {
       const result = await ensureWorkerRouteForCategory(category);
       results.push({
         category,
@@ -6354,7 +6416,7 @@ router.post('/create-all-v3-routes', async (_req: Request, res: Response) => {
     const failed = results.filter(r => !r.success).length;
 
     res.json({
-      message: `Created routes for ${successful}/${V3_EXCLUSIVE_CATEGORIES.length} V3 categories`,
+      message: `Created routes for ${successful}/${allV3Cats.length} V3 categories`,
       successful,
       failed,
       results
@@ -7220,7 +7282,7 @@ Target word count: ${serpAnalysis.targetWordCount}+ words\n`
     const existingSlugs = await fetchExistingArticleSlugsForCategory(context.kvPrefix);
     console.log(`[SEO-V3] [Step 3/7] ✓ Found ${existingSlugs.length} same-category articles`);
 
-    // Fetch cross-category articles (from V3-exclusive categories) with full URLs
+    // Fetch cross-category articles (from all V3 categories in KV) with full URLs
     const crossCategoryUrls = await fetchCrossCategoryArticlesForLinking(context.kvPrefix);
     console.log(`[SEO-V3] [Step 3/7] ✓ Found ${crossCategoryUrls.length} cross-category articles for linking`);
 
@@ -7503,7 +7565,7 @@ Return ONLY valid JSON:
       const categorySlugForVideo = context.categorySlug || context.niche?.replace(/\s+/g, '-').toLowerCase() || 'cat-content';
       console.log(`[SEO-V3] 🎬 Starting video funnel for category: ${categorySlugForVideo}`);
       
-      const funnelResult = searchVideoFunnel(keyword.keyword, categorySlugForVideo);
+      const funnelResult = await searchVideoFunnel(keyword.keyword, categorySlugForVideo);
       
       if (funnelResult.video) {
         video = funnelResult.video;
@@ -7768,8 +7830,70 @@ async function runV3AutonomousGeneration() {
         // Ensure Worker Route
         await ensureWorkerRouteForCategory(foundInProgress);
       } else {
-        console.log(`[SEO-V3] ⚠️ No saved context for ${foundInProgress}, will discover new category`);
-        foundInProgress = null;
+        // Category is in_progress in KV but has no saved context (keyword gen may have failed)
+        // Regenerate keywords for this category instead of discovering a new one
+        console.log(`[SEO-V3] ⚠️ No saved context for ${foundInProgress}, regenerating keywords...`);
+        addActivityLog('info', `[V3] Recovering in-progress category: ${foundInProgress}`);
+
+        const categoryName = foundInProgress.split('-').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        const recovered: DiscoveredCategory = {
+          name: categoryName,
+          slug: foundInProgress,
+          estimatedKeywords: 25,
+          affiliatePotential: 'high',
+          reasoning: 'Recovered in-progress category (context was lost)'
+        };
+
+        await ensureWorkerRouteForCategory(foundInProgress);
+
+        let keywords = await generateCategoryKeywords(recovered);
+        if (keywords.length < 5) {
+          const baseName = categoryName.toLowerCase();
+          const fallbackKeywords = [
+            `best ${baseName}`, `top ${baseName} reviews`, `${baseName} buying guide`,
+            `affordable ${baseName}`, `${baseName} for indoor cats`, `${baseName} for kittens`,
+            `${baseName} comparison`, `luxury ${baseName}`, `${baseName} on amazon`,
+            `how to choose ${baseName}`, `${baseName} for senior cats`, `${baseName} for multiple cats`,
+            `${baseName} recommendations`, `${baseName} under 50 dollars`, `${baseName} for small spaces`,
+            `diy ${baseName}`, `${baseName} pros and cons`, `${baseName} for anxious cats`,
+            `most popular ${baseName}`, `${baseName} worth buying`
+          ];
+          keywords = [...new Set([...keywords, ...fallbackKeywords])];
+        }
+
+        v3CategoryContext = createEmptyCategoryContext(foundInProgress, 'catsluvus.com', `/${foundInProgress}`);
+        v3CategoryContext.niche = categoryName;
+        v3CategoryContext.categoryName = categoryName;
+        v3CategoryContext.keywords = keywords.map((kw: string) => ({
+          keyword: kw,
+          slug: kw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+          priority: 'medium' as any,
+          score: 50,
+          status: 'pending' as const,
+          cpc: 0,
+          volume: 0,
+          difficulty: 0,
+          intent: 'informational' as const
+        }));
+
+        await saveCategoryStatus(foundInProgress, {
+          category: foundInProgress,
+          status: 'in_progress',
+          articleCount: 0,
+          expectedCount: keywords.length,
+          avgSeoScore: 0,
+          startedAt: new Date().toISOString()
+        });
+
+        await saveResearchToKV({
+          researchPhase: 'generation',
+          selectedNiche: categoryName,
+          keywords: v3CategoryContext.keywords,
+          startedAt: v3CategoryContext.createdAt
+        } as any, v3CategoryContext);
+
+        console.log(`[SEO-V3] ✅ Recovered ${foundInProgress} with ${keywords.length} keywords`);
+        addActivityLog('success', `[V3] Recovered category: ${categoryName} (${keywords.length} keywords)`);
       }
     }
     
@@ -7786,58 +7910,109 @@ async function runV3AutonomousGeneration() {
         if (nextCategory) {
           console.log(`[SEO-V3] ✅ Discovered: ${nextCategory.name} (${nextCategory.slug})`);
           addActivityLog('info', `[V3] Discovered next category: ${nextCategory.name}`);
-          
-          // Create Worker routes
-          await ensureWorkerRouteForCategory(nextCategory.slug);
-          
-          // Generate keywords
-          const keywords = await generateCategoryKeywords(nextCategory);
-          console.log(`[SEO-V3] Generated ${keywords.length} keywords for ${nextCategory.name}`);
-          
-          if (keywords.length >= 5) {
-            // Create new v3CategoryContext
-            v3CategoryContext = createEmptyCategoryContext(nextCategory.slug, 'catsluvus.com', `/${nextCategory.slug}`);
-            v3CategoryContext.niche = nextCategory.name;
-            v3CategoryContext.categoryName = nextCategory.name;
-            v3CategoryContext.keywords = keywords.map((kw: string) => ({
-              keyword: kw,
-              slug: kw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
-              priority: 'medium' as any,
-              score: 50,
-              status: 'pending' as const,
-              cpc: 0,
-              volume: 0,
-              difficulty: 0,
-              intent: 'informational' as const
-            }));
-            
-            // Save in-progress status
-            await saveCategoryStatus(nextCategory.slug, {
+
+          // IMMEDIATELY save in_progress status to KV so retries find this category
+          let kvSaved = await saveCategoryStatus(nextCategory.slug, {
+            category: nextCategory.slug,
+            status: 'in_progress',
+            articleCount: 0,
+            expectedCount: 0,
+            avgSeoScore: 0,
+            startedAt: new Date().toISOString()
+          });
+          if (!kvSaved) {
+            // Retry once after 2s - this save is critical to prevent re-discovery loops
+            console.log(`[SEO-V3] ⚠️ KV save failed for ${nextCategory.slug}, retrying in 2s...`);
+            await new Promise(r => setTimeout(r, 2000));
+            kvSaved = await saveCategoryStatus(nextCategory.slug, {
               category: nextCategory.slug,
               status: 'in_progress',
               articleCount: 0,
-              expectedCount: keywords.length,
+              expectedCount: 0,
               avgSeoScore: 0,
               startedAt: new Date().toISOString()
             });
-            
-            // Save context to KV for persistence
-            await saveResearchToKV({
-              researchPhase: 'generation',
-              selectedNiche: nextCategory.name,
-              keywords: v3CategoryContext.keywords,
-              startedAt: v3CategoryContext.createdAt
-            } as any, v3CategoryContext);
-            
-            addActivityLog('success', `[V3] Started category: ${nextCategory.name} (${keywords.length} keywords)`);
-            console.log(`[SEO-V3] 🚀 STARTING: ${nextCategory.name} with ${keywords.length} keywords`);
-          } else {
-            console.log(`[SEO-V3] ⚠️ Only ${keywords.length} keywords for ${nextCategory.name}, need at least 5`);
-            addActivityLog('warning', `[V3] Insufficient keywords for ${nextCategory.name}: ${keywords.length}`);
-            console.log('[SEO-V3] Will retry in 5 minutes...');
-            setTimeout(runV3AutonomousGeneration, 300000);
-            return;
+            if (!kvSaved) {
+              console.error(`[SEO-V3] ❌ CRITICAL: Could not save ${nextCategory.slug} to KV after retry - will cause re-discovery loop!`);
+            }
           }
+
+          // Create Worker routes
+          await ensureWorkerRouteForCategory(nextCategory.slug);
+
+          // Generate keywords via Copilot CLI
+          let keywords = await generateCategoryKeywords(nextCategory);
+          console.log(`[SEO-V3] Copilot returned ${keywords.length} keywords for ${nextCategory.name}`);
+
+          // Fallback: generate basic keywords from category name if Copilot fails
+          if (keywords.length < 5) {
+            console.log(`[SEO-V3] ⚠️ Copilot keywords insufficient (${keywords.length}), using fallback generator`);
+            addActivityLog('warning', `[V3] Copilot returned only ${keywords.length} keywords, using fallback`);
+            const baseName = nextCategory.name.toLowerCase();
+            const fallbackKeywords = [
+              `best ${baseName}`,
+              `top ${baseName} reviews`,
+              `${baseName} buying guide`,
+              `affordable ${baseName}`,
+              `${baseName} for indoor cats`,
+              `${baseName} for kittens`,
+              `${baseName} comparison`,
+              `luxury ${baseName}`,
+              `${baseName} on amazon`,
+              `how to choose ${baseName}`,
+              `${baseName} for senior cats`,
+              `${baseName} for multiple cats`,
+              `${baseName} recommendations`,
+              `${baseName} under 50 dollars`,
+              `${baseName} for small spaces`,
+              `diy ${baseName}`,
+              `${baseName} pros and cons`,
+              `${baseName} for anxious cats`,
+              `most popular ${baseName}`,
+              `${baseName} worth buying`
+            ];
+            // Merge: keep any Copilot keywords + add fallbacks
+            const merged = [...new Set([...keywords, ...fallbackKeywords])];
+            keywords = merged;
+            console.log(`[SEO-V3] ✓ Fallback: now have ${keywords.length} keywords total`);
+          }
+
+          // Create new v3CategoryContext
+          v3CategoryContext = createEmptyCategoryContext(nextCategory.slug, 'catsluvus.com', `/${nextCategory.slug}`);
+          v3CategoryContext.niche = nextCategory.name;
+          v3CategoryContext.categoryName = nextCategory.name;
+          v3CategoryContext.keywords = keywords.map((kw: string) => ({
+            keyword: kw,
+            slug: kw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+            priority: 'medium' as any,
+            score: 50,
+            status: 'pending' as const,
+            cpc: 0,
+            volume: 0,
+            difficulty: 0,
+            intent: 'informational' as const
+          }));
+
+          // Update KV status with actual keyword count
+          await saveCategoryStatus(nextCategory.slug, {
+            category: nextCategory.slug,
+            status: 'in_progress',
+            articleCount: 0,
+            expectedCount: keywords.length,
+            avgSeoScore: 0,
+            startedAt: new Date().toISOString()
+          });
+
+          // Save context to KV for persistence
+          await saveResearchToKV({
+            researchPhase: 'generation',
+            selectedNiche: nextCategory.name,
+            keywords: v3CategoryContext.keywords,
+            startedAt: v3CategoryContext.createdAt
+          } as any, v3CategoryContext);
+
+          addActivityLog('success', `[V3] Started category: ${nextCategory.name} (${keywords.length} keywords)`);
+          console.log(`[SEO-V3] 🚀 STARTING: ${nextCategory.name} with ${keywords.length} keywords`);
         } else {
           console.log('[SEO-V3] ❌ No categories available to discover');
           addActivityLog('info', '[V3] All categories exhausted - V3 autonomous stopped');
@@ -7878,7 +8053,7 @@ async function runV3AutonomousGeneration() {
       completedAt: new Date().toISOString()
     });
     
-    // V3 AUTONOMOUS: Discover and start next category from exclusive list
+    // V3 AUTONOMOUS: Discover and start next category via Copilot CLI
     if (v3AutonomousRunning) {
       addActivityLog('info', '[V3] Discovering next high-CPC category...');
       
@@ -7887,48 +8062,85 @@ async function runV3AutonomousGeneration() {
         
         if (nextCategory) {
           addActivityLog('info', `[V3] Found next category: ${nextCategory.name}`);
-          
-          // Create Worker routes for new category
-          await ensureWorkerRouteForCategory(nextCategory.slug);
-          
-          // Generate keywords for new category
-          const keywords = await generateCategoryKeywords(nextCategory);
-          
-          if (keywords.length >= 5) {
-            // Create new v3CategoryContext
-            v3CategoryContext = createEmptyCategoryContext(nextCategory.slug, 'catsluvus.com', `/${nextCategory.slug}`);
-            v3CategoryContext.niche = nextCategory.name;
-            v3CategoryContext.categoryName = nextCategory.name;
-            v3CategoryContext.keywords = keywords.map((kw: string) => ({
-              keyword: kw,
-              slug: kw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
-              priority: 'medium' as any,
-              score: 50,
-              status: 'pending' as const,
-              cpc: 0,
-              volume: 0,
-              difficulty: 0,
-              intent: 'informational' as const
-            }));
-            
-            // Save in-progress status
-            await saveCategoryStatus(nextCategory.slug, {
+
+          // IMMEDIATELY save in_progress to KV so retries find this category
+          let kvSaved2 = await saveCategoryStatus(nextCategory.slug, {
+            category: nextCategory.slug,
+            status: 'in_progress',
+            articleCount: 0,
+            expectedCount: 0,
+            avgSeoScore: 0,
+            startedAt: new Date().toISOString()
+          });
+          if (!kvSaved2) {
+            console.log(`[SEO-V3] ⚠️ KV save failed for ${nextCategory.slug}, retrying in 2s...`);
+            await new Promise(r => setTimeout(r, 2000));
+            kvSaved2 = await saveCategoryStatus(nextCategory.slug, {
               category: nextCategory.slug,
               status: 'in_progress',
               articleCount: 0,
-              expectedCount: keywords.length,
+              expectedCount: 0,
               avgSeoScore: 0,
               startedAt: new Date().toISOString()
             });
-            
-            addActivityLog('success', `[V3] Started new category: ${nextCategory.name} (${keywords.length} keywords)`);
-            
-            // Continue autonomous generation with new category
-            setImmediate(runV3AutonomousGeneration);
-            return;
-          } else {
-            addActivityLog('warning', `[V3] Only ${keywords.length} keywords for ${nextCategory.name}, skipping`);
+            if (!kvSaved2) {
+              console.error(`[SEO-V3] ❌ CRITICAL: Could not save ${nextCategory.slug} to KV after retry`);
+            }
           }
+
+          // Create Worker routes for new category
+          await ensureWorkerRouteForCategory(nextCategory.slug);
+
+          // Generate keywords for new category
+          let keywords = await generateCategoryKeywords(nextCategory);
+
+          // Fallback keywords if Copilot fails
+          if (keywords.length < 5) {
+            addActivityLog('warning', `[V3] Copilot returned only ${keywords.length} keywords, using fallback`);
+            const baseName = nextCategory.name.toLowerCase();
+            const fallbackKeywords = [
+              `best ${baseName}`, `top ${baseName} reviews`, `${baseName} buying guide`,
+              `affordable ${baseName}`, `${baseName} for indoor cats`, `${baseName} for kittens`,
+              `${baseName} comparison`, `luxury ${baseName}`, `${baseName} on amazon`,
+              `how to choose ${baseName}`, `${baseName} for senior cats`, `${baseName} for multiple cats`,
+              `${baseName} recommendations`, `${baseName} under 50 dollars`, `${baseName} for small spaces`,
+              `diy ${baseName}`, `${baseName} pros and cons`, `${baseName} for anxious cats`,
+              `most popular ${baseName}`, `${baseName} worth buying`
+            ];
+            keywords = [...new Set([...keywords, ...fallbackKeywords])];
+          }
+
+          // Create new v3CategoryContext
+          v3CategoryContext = createEmptyCategoryContext(nextCategory.slug, 'catsluvus.com', `/${nextCategory.slug}`);
+          v3CategoryContext.niche = nextCategory.name;
+          v3CategoryContext.categoryName = nextCategory.name;
+          v3CategoryContext.keywords = keywords.map((kw: string) => ({
+            keyword: kw,
+            slug: kw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+            priority: 'medium' as any,
+            score: 50,
+            status: 'pending' as const,
+            cpc: 0,
+            volume: 0,
+            difficulty: 0,
+            intent: 'informational' as const
+          }));
+
+          // Update KV with keyword count
+          await saveCategoryStatus(nextCategory.slug, {
+            category: nextCategory.slug,
+            status: 'in_progress',
+            articleCount: 0,
+            expectedCount: keywords.length,
+            avgSeoScore: 0,
+            startedAt: new Date().toISOString()
+          });
+
+          addActivityLog('success', `[V3] Started new category: ${nextCategory.name} (${keywords.length} keywords)`);
+
+          // Continue autonomous generation with new category
+          setImmediate(runV3AutonomousGeneration);
+          return;
         } else {
           addActivityLog('info', '[V3] No more categories available');
         }
@@ -8321,7 +8533,7 @@ setTimeout(() => {
 // Runs every 10 minutes to ensure all categories have proper routing
 // ============================================================================
 
-function getAllKnownCategories(): string[] {
+async function getAllKnownCategories(): Promise<string[]> {
   const staticCategories = [
     'petinsurance',
     'automatic-cat-feeders',
@@ -8350,7 +8562,9 @@ function getAllKnownCategories(): string[] {
     'cat-litter-mats',
     'cat-dental-care-products'
   ];
-  const combined = new Set([...staticCategories, ...V3_EXCLUSIVE_CATEGORIES]);
+  // Include dynamically discovered V3 categories from KV
+  const dynamicV3Cats = await getAllCategoryStatusKeys();
+  const combined = new Set([...staticCategories, ...V3_LEGACY_CATEGORIES, ...dynamicV3Cats]);
   return Array.from(combined);
 }
 
@@ -8361,7 +8575,7 @@ async function healMissingRoutes(): Promise<{ checked: number; created: number; 
     return { checked: 0, created: 0, errors: ['No API token'] };
   }
 
-  const allCategories = getAllKnownCategories();
+  const allCategories = await getAllKnownCategories();
   console.log(`[Route Healer] 🔧 Checking ${allCategories.length} categories for missing routes...`);
   let checked = 0;
   let created = 0;

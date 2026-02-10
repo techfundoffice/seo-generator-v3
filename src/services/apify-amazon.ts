@@ -4,9 +4,11 @@
  * Uses Apify Amazon Product Scraper actor
  */
 
+declare const fetch: typeof globalThis.fetch;
+
 import { secrets } from "./doppler-secrets";
 
-const APIFY_ACTOR_ID = "junglee/amazon-crawler";
+const APIFY_ACTOR_ID = "junglee~free-amazon-product-scraper";
 const AMAZON_AFFILIATE_TAG = secrets.get("AMAZON_AFFILIATE_TAG") || process.env.AMAZON_AFFILIATE_TAG || "catsluvus03-20";
 const AMAZON_MARKETPLACE = "www.amazon.com";
 
@@ -35,29 +37,31 @@ function getApifyToken(): string | undefined {
   return secrets.get("APIFY_TOKEN") || process.env.APIFY_TOKEN;
 }
 
-export async function searchProductsViaApify(keyword: string, maxResults: number = 5): Promise<AmazonProduct[]> {
+export async function searchProductsViaApify(keyword: string, maxResults: number = 3): Promise<AmazonProduct[]> {
   const APIFY_TOKEN = getApifyToken();
   if (!APIFY_TOKEN) throw new Error("APIFY_TOKEN not configured");
 
   console.log(`[Apify Amazon] Searching for: "${keyword}" (max ${maxResults})`);
 
   try {
+    const searchUrl = `https://${AMAZON_MARKETPLACE}/s?k=${encodeURIComponent(keyword)}`;
     const runResponse = await fetch(
       `https://api.apify.com/v2/acts/${APIFY_ACTOR_ID}/runs?token=${APIFY_TOKEN}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          search: keyword,
-          searchType: "keyword",
-          country: "US",
+          categoryUrls: [{ url: searchUrl }],
           maxItemsPerStartUrl: maxResults,
-          proxyConfiguration: { useApifyProxy: true }
+          maxPagesPerStartUrl: 1
         })
       }
     );
 
-    if (!runResponse.ok) throw new Error(`Apify run failed: ${runResponse.status} ${runResponse.statusText}`);
+    if (!runResponse.ok) {
+      const errText = await runResponse.text().catch(() => "");
+      throw new Error(`Apify run failed: ${runResponse.status} ${runResponse.statusText} ${errText}`);
+    }
     const runData = await runResponse.json();
     const runId = runData.data?.id;
     if (!runId) throw new Error("No run ID returned");

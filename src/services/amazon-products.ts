@@ -56,7 +56,7 @@ function initializeApi() {
 export async function searchAmazonProducts(
   keywords: string,
   category: string = 'All',
-  itemCount: number = 5
+  itemCount: number = 3
 ): Promise<AmazonSearchResult> {
   if (!initializeApi()) {
     return {
