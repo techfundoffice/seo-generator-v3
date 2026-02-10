@@ -1733,14 +1733,12 @@ async function logDiscoveryError(reason: string): Promise<null> {
  * Handles control characters that cause JSON.parse crashes.
  */
 function sanitizeAndParseDiscoveryJSON(raw: string, allExcluded: string[]): DiscoveredCategory | null {
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  // Strip markdown code fences that AIs often wrap JSON in
+  let cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
   if (!jsonMatch) return null;
-  const sanitized = jsonMatch[0].replace(/[\x00-\x1F\x7F]/g, (char) => {
-    if (char === '\n') return '\\n';
-    if (char === '\r') return '\\r';
-    if (char === '\t') return '\\t';
-    return '';
-  });
+  // Remove control chars except \n, \r, \t (which are valid JSON whitespace)
+  const sanitized = jsonMatch[0].replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
   try {
     const cat = JSON.parse(sanitized) as DiscoveredCategory;
     if (!cat.name || !cat.slug) return null;
@@ -1751,6 +1749,7 @@ function sanitizeAndParseDiscoveryJSON(raw: string, allExcluded: string[]): Disc
     return cat;
   } catch (e: any) {
     console.log(`[SEO-V3] ⚠️ JSON parse failed after sanitization: ${e.message}`);
+    console.log(`[SEO-V3] Raw (first 300 chars): ${sanitized.substring(0, 300)}`);
     return null;
   }
 }
