@@ -3532,6 +3532,86 @@ function normalizeArticleContent(article: ArticleData): ArticleData {
 }
 
 /**
+ * Run Harper grammar checker on article text fields before HTML assembly.
+ * Auto-applies the first suggestion for each error (spelling, grammar, punctuation).
+ * Harper is rule-based (not AI), runs via WASM, <10ms per field, zero network calls.
+ */
+let _harperLinter: any = null;
+async function getHarperLinter() {
+  if (!_harperLinter) {
+    const harper = await import('harper.js');
+    _harperLinter = new harper.LocalLinter({
+      binary: harper.binary,
+      dialect: harper.Dialect.American,
+    });
+  }
+  return _harperLinter;
+}
+
+async function grammarCheckArticle(article: ArticleData): Promise<ArticleData> {
+  try {
+    const linter = await getHarperLinter();
+    let totalFixes = 0;
+
+    const fixText = async (text: string): Promise<string> => {
+      if (!text || text.length < 10) return text;
+      const lints = await linter.lint(text);
+      if (lints.length === 0) return text;
+
+      // Apply fixes in reverse order so span positions stay valid
+      const fixes = lints
+        .filter((l: any) => l.suggestion_count() > 0)
+        .map((l: any) => ({
+          start: l.span().start,
+          end: l.span().end,
+          replacement: l.suggestions()[0].get_replacement_text(),
+        }))
+        .sort((a: any, b: any) => b.start - a.start);
+
+      let result = text;
+      for (const fix of fixes) {
+        result = result.slice(0, fix.start) + fix.replacement + result.slice(fix.end);
+        totalFixes++;
+      }
+      return result;
+    };
+
+    if (article.introduction) article.introduction = await fixText(article.introduction);
+    if (article.conclusion) article.conclusion = await fixText(article.conclusion);
+    if (article.quickAnswer) article.quickAnswer = await fixText(article.quickAnswer);
+    if (article.definitionSnippet) article.definitionSnippet = await fixText(article.definitionSnippet);
+    if (article.sections) {
+      for (const s of article.sections) {
+        s.content = await fixText(s.content);
+        if (s.subsections) {
+          for (const sub of s.subsections) {
+            sub.content = await fixText(sub.content);
+          }
+        }
+      }
+    }
+    if (article.faqs) {
+      for (const f of article.faqs) {
+        f.answer = await fixText(f.answer);
+      }
+    }
+    if (article.keyTakeaways) {
+      article.keyTakeaways = await Promise.all(article.keyTakeaways.map(fixText));
+    }
+    if (article.keyFacts) {
+      article.keyFacts = await Promise.all(article.keyFacts.map(fixText));
+    }
+
+    if (totalFixes > 0) {
+      console.log(`[Harper] ✅ Auto-fixed ${totalFixes} grammar/spelling issues`);
+    }
+  } catch (error: any) {
+    console.warn(`[Harper] ⚠️ Grammar check skipped: ${error.message}`);
+  }
+  return article;
+}
+
+/**
  * SEO Tools for Copilot SDK Agent (using JSON Schema for parameters)
  */
 async function getSEOTools() {
@@ -3845,7 +3925,8 @@ Return ONLY valid JSON (no markdown code blocks, no explanation before/after):
       })
       .replace(/\n\s*\n/g, '\n'); // Collapse multiple newlines
     
-    const article = normalizeArticleContent(JSON.parse(sanitizedJson) as ArticleData);
+    let article = normalizeArticleContent(JSON.parse(sanitizedJson) as ArticleData);
+    article = await grammarCheckArticle(article);
     console.log(`✅ [Copilot CLI] Generated: ${article.title}`);
 
     // Enforce SEO limits - truncate title and meta description
@@ -4206,6 +4287,7 @@ Return ONLY valid JSON (no markdown code blocks):
       }
     }
     article = normalizeArticleContent(article);
+    article = await grammarCheckArticle(article);
     console.log(`✅ [OpenRouter] Generated: ${article.title}`);
 
     // Enforce SEO limits - truncate title and meta description
@@ -7834,6 +7916,7 @@ PROGRAMMATIC SEO QUALITY GATES (MANDATORY):
     }
 
     article = normalizeArticleContent(article);
+    article = await grammarCheckArticle(article);
 
     if (!article.title) {
       throw new Error('Invalid article JSON - missing title');
