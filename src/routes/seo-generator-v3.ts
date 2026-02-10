@@ -2630,11 +2630,20 @@ function buildArticleHtml(
       );
       const sectionImageHtml = sectionImage ? buildImageHtml(sectionImage) : '';
 
+      // Strip AI-generated comparison tables from section content when we have a real one
+      let sectionContent = section.content;
+      if (comparisonTableHtml) {
+        // Remove markdown-style tables (| ... | ... |) with surrounding text like "Here's a comparison..."
+        sectionContent = sectionContent.replace(/(?:<p>)?[^<]*(?:comparison|comparing|top[- ]rated)[^<]*(?:<\/p>)?\s*(?:<table[\s\S]*?<\/table>|\|[\s\S]*?\|\s*(?:\n|$)(?:\|[\s\S]*?\|\s*(?:\n|$))*)/gi, '');
+        // Remove any leftover "These products are highly rated..." filler after the stripped table
+        sectionContent = sectionContent.replace(/(?:<p>)?These products are (?:highly rated|top[- ]rated)[\s\S]*?(?:<\/p>|$)/gi, '');
+      }
+
       return `
         <section id="section-${index + 1}">
           <h2>${section.heading}</h2>
           ${sectionImageHtml}
-          ${section.content}
+          ${sectionContent}
         </section>
       `;
     }).join('');
@@ -7572,6 +7581,7 @@ Requirements:
 - Include expert quotes and real pricing/data
 - Write in authoritative, trustworthy tone
 - Include 3-5 external authority links to veterinary sites, manufacturer sites, research journals
+- DO NOT include comparison tables or product tables in the article sections — a real product comparison is injected separately
 
 INTERNAL LINKING (MANDATORY - REQUIRED FOR SEO SCORE):
 **YOU MUST INCLUDE 8-12 INTERNAL LINKS** in the "internalLinks" array. This is NOT optional.
