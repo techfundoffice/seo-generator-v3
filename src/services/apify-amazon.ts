@@ -68,10 +68,10 @@ export async function searchProductsViaApify(keyword: string, maxResults: number
 
     console.log(`[Apify Amazon] Run started: ${runId}`);
 
-    // Poll for completion (max 60 seconds)
+    // Poll for completion (max 3 minutes)
     let status = "RUNNING";
     let attempts = 0;
-    while (status === "RUNNING" && attempts < 30) {
+    while (status === "RUNNING" && attempts < 90) {
       await new Promise(resolve => setTimeout(resolve, 2000));
       const statusResponse = await fetch(`https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_TOKEN}`);
       const statusData = await statusResponse.json();
@@ -130,7 +130,7 @@ export async function getProductByAsinViaApify(asin: string): Promise<AmazonProd
 
     let status = "RUNNING";
     let attempts = 0;
-    while (status === "RUNNING" && attempts < 30) {
+    while (status === "RUNNING" && attempts < 90) {
       await new Promise(resolve => setTimeout(resolve, 2000));
       const statusResponse = await fetch(`https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_TOKEN}`);
       const statusData = await statusResponse.json();
