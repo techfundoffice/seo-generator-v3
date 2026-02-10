@@ -3504,6 +3504,32 @@ interface ArticleData {
   providerProsCons?: Array<{ provider: string; pros: string[]; cons: string[] }>;
 }
 
+/**
+ * Normalize literal \n escape sequences in article content fields.
+ * AI models (especially smaller ones like Llama/Mistral) sometimes output double-escaped
+ * \\n in JSON, which after JSON.parse() becomes the literal text "\n" instead of a real
+ * newline. This converts those to proper HTML paragraph/line breaks before HTML assembly.
+ */
+function normalizeArticleContent(article: ArticleData): ArticleData {
+  const fix = (s: string) => s
+    .replace(/\\n\\n/g, '</p><p>')
+    .replace(/\\n/g, '<br>')
+    .replace(/\\r/g, '')
+    .replace(/\\t/g, ' ');
+
+  if (article.introduction) article.introduction = fix(article.introduction);
+  if (article.conclusion) article.conclusion = fix(article.conclusion);
+  if (article.quickAnswer) article.quickAnswer = fix(article.quickAnswer);
+  if (article.definitionSnippet) article.definitionSnippet = fix(article.definitionSnippet);
+  if (article.sections) article.sections.forEach(s => {
+    s.content = fix(s.content);
+    if (s.subsections) s.subsections.forEach(sub => { sub.content = fix(sub.content); });
+  });
+  if (article.faqs) article.faqs.forEach(f => { f.answer = fix(f.answer); });
+  if (article.keyTakeaways) article.keyTakeaways = article.keyTakeaways.map(fix);
+  if (article.keyFacts) article.keyFacts = article.keyFacts.map(fix);
+  return article;
+}
 
 /**
  * SEO Tools for Copilot SDK Agent (using JSON Schema for parameters)
@@ -3819,7 +3845,7 @@ Return ONLY valid JSON (no markdown code blocks, no explanation before/after):
       })
       .replace(/\n\s*\n/g, '\n'); // Collapse multiple newlines
     
-    const article = JSON.parse(sanitizedJson) as ArticleData;
+    const article = normalizeArticleContent(JSON.parse(sanitizedJson) as ArticleData);
     console.log(`✅ [Copilot CLI] Generated: ${article.title}`);
 
     // Enforce SEO limits - truncate title and meta description
@@ -4179,6 +4205,7 @@ Return ONLY valid JSON (no markdown code blocks):
         throw parseError;
       }
     }
+    article = normalizeArticleContent(article);
     console.log(`✅ [OpenRouter] Generated: ${article.title}`);
 
     // Enforce SEO limits - truncate title and meta description
@@ -7805,6 +7832,8 @@ PROGRAMMATIC SEO QUALITY GATES (MANDATORY):
         .replace(/,\s*]/g, ']');
       article = JSON.parse(cleaned) as ArticleData;
     }
+
+    article = normalizeArticleContent(article);
 
     if (!article.title) {
       throw new Error('Invalid article JSON - missing title');

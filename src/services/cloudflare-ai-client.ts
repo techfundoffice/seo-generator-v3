@@ -119,9 +119,13 @@ export async function generateWithCloudflareAI(
 
       const data = await response.json() as any;
       // Handle both /ai/run/ format (result.response) and OpenAI format (choices[0].message.content)
-      const content = useGlobalKey 
-        ? data.result?.response 
+      const rawContent = useGlobalKey
+        ? data.result?.response
         : data.choices?.[0]?.message?.content;
+
+      // Ensure content is always a string (some models return objects)
+      const content = typeof rawContent === 'string' ? rawContent
+        : rawContent ? JSON.stringify(rawContent) : null;
 
       if (!content) {
         console.log(`⚠️ [Cloudflare AI] ${currentModel} returned empty content`);
