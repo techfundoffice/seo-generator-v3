@@ -549,6 +549,42 @@ export async function generateArticleImages(
       break;
     }
 
+    // Determine R2 key early to check if image already exists
+    let r2KeyCheck: string;
+    switch (context.imageType) {
+      case 'hero':
+        r2KeyCheck = `${safeCategory}/${safeSlug}/hero.png`;
+        break;
+      case 'closing':
+        r2KeyCheck = `${safeCategory}/${safeSlug}/closing.png`;
+        break;
+      default:
+        r2KeyCheck = `${safeCategory}/${safeSlug}/section-${context.index}.png`;
+    }
+
+    // Check if image already exists in R2 before burning neurons
+    try {
+      const checkUrl = `https://petinsurance.webmaster-bc8.workers.dev/img/${r2KeyCheck}`;
+      const headResp = await fetch(checkUrl, { method: 'HEAD' });
+      if (headResp.ok) {
+        log('info', `[V3] Image already in R2: ${r2KeyCheck}, skipping generation`, {});
+        result.images.push({
+          url: `/img/${r2KeyCheck}`,
+          alt: generateAltText(safeCategory, context, keyword),
+          caption: generateCaption(safeCategory, context, keyword),
+          width: 1024,
+          height: 768,
+          imageType: context.imageType,
+          sectionIndex: context.index,
+          prompt: '(cached)',
+          r2Key: r2KeyCheck,
+        });
+        continue;
+      }
+    } catch {
+      // HEAD check failed, proceed with generation
+    }
+
     const imageStart = Date.now();
     let imageBuffer: ArrayBuffer | null = null;
     let prompt = '';
@@ -559,7 +595,7 @@ export async function generateArticleImages(
     // Retry loop with verification
     while (attempt < MAX_IMAGE_RETRIES && !verificationPassed) {
       attempt++;
-      
+
       // Check quota before each attempt
       if (!canGenerateImage()) {
         log('warning', '[V3] Image quota reached during retry', {});
@@ -568,7 +604,7 @@ export async function generateArticleImages(
 
       // Generate prompt (same for all attempts - it's keyword-literal now)
       prompt = generateImagePrompt(category, context, keyword);
-      
+
       if (attempt === 1) {
         log('info', `[V3] Generating ${context.imageType} image for "${keyword}"...`, {
           prompt: prompt.substring(0, 120) + '...'

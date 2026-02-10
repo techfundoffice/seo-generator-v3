@@ -44,7 +44,7 @@ import {
   PrioritizedKeyword
 } from '../data/keyword-priorities';
 import { searchAmazonProducts, AMAZON_TAG } from '../services/amazon-products';
-import { searchProductsViaApify, isApifyAvailable } from '../services/apify-amazon';
+import { searchProductsViaApify, isApifyAvailable, type ApifySearchResult } from '../services/apify-amazon';
 
 // Lazy-load google-search-console to avoid 20+ second startup delay from googleapis
 let gscModule: any = null;
@@ -866,10 +866,16 @@ interface AmazonProductData {
     name: string;
     price: string;
     priceValue: number;
+    listPrice: string;
     asin: string;
     url: string;
     rating: string;
+    reviewCount: number;
+    isPrime: boolean;
     features: string;
+    featuresList: string[];
+    brand: string;
+    description: string;
     amazonSearch: string;
   }>;
   comparisonRows: string[][];
@@ -887,22 +893,34 @@ async function fetchAmazonProductsForKeyword(keyword: string, category: string =
 
   // Helper: convert raw product list to AmazonProductData format
   function formatProductData(rawProducts: Array<{
-    title: string; price: string; priceValue?: number; asin: string;
-    detailPageUrl?: string; url?: string; rating?: number; features?: string[];
+    title: string; price: string; priceValue?: number; listPrice?: string;
+    asin: string; detailPageUrl?: string; url?: string; rating?: number;
+    features?: string[]; brand?: string; description?: string;
+    reviewCount?: number; isPrime?: boolean;
   }>): AmazonProductData {
     const products = rawProducts.map(p => ({
-      name: p.title.length > 60 ? p.title.substring(0, 57) + '...' : p.title,
+      name: p.title,
       price: p.price,
       priceValue: p.priceValue || 0,
+      listPrice: p.listPrice || '',
       asin: p.asin,
       url: p.detailPageUrl || p.url || `https://www.amazon.com/dp/${p.asin}?tag=${AMAZON_TAG}`,
       rating: p.rating ? `${p.rating}/5` : '4.5/5',
-      features: p.features?.slice(0, 2).join('; ') || 'Premium quality',
+      reviewCount: p.reviewCount || 0,
+      isPrime: p.isPrime || false,
+      features: p.features?.length ? p.features.slice(0, 5).join('; ') : 'Premium quality',
+      featuresList: p.features || [],
+      brand: p.brand || '',
+      description: p.description || '',
       amazonSearch: p.title.replace(/[^a-zA-Z0-9\s]/g, '').split(' ').slice(0, 5).join('+')
     }));
 
     const comparisonRows = products.map(p => [
-      p.name, p.price, p.features, p.rating, p.amazonSearch
+      p.brand ? `${p.name} by ${p.brand}` : p.name,
+      p.listPrice && p.listPrice !== p.price ? `${p.price} (was ${p.listPrice})` : p.price,
+      p.features,
+      p.reviewCount > 0 ? `${p.rating} (${p.reviewCount.toLocaleString()} reviews)` : p.rating,
+      p.amazonSearch
     ]);
 
     const productSchemaItems = products.map((p, index) => ({
@@ -911,7 +929,8 @@ async function fetchAmazonProductsForKeyword(keyword: string, category: string =
       "item": {
         "@type": "Product" as const,
         "name": p.name,
-        "description": `${p.name} - ${p.features}`,
+        "description": p.description || `${p.name} - ${p.features}`,
+        "brand": p.brand ? { "@type": "Brand" as const, "name": p.brand } : undefined,
         "sku": p.asin,
         "offers": {
           "@type": "Offer" as const,
@@ -923,19 +942,33 @@ async function fetchAmazonProductsForKeyword(keyword: string, category: string =
         "aggregateRating": p.rating ? {
           "@type": "AggregateRating" as const,
           "ratingValue": p.rating.replace('/5', ''),
-          "bestRating": "5"
+          "bestRating": "5",
+          "reviewCount": p.reviewCount > 0 ? p.reviewCount.toString() : undefined
         } : undefined
       }
     }));
 
     const promptText = `
-REAL AMAZON PRODUCTS (USE THESE EXACT PRODUCTS IN YOUR COMPARISON TABLE):
-${products.map((p, i) => `${i + 1}. "${p.name}" - ${p.price} - ASIN: ${p.asin}
-   Features: ${p.features}
-   Rating: ${p.rating}
-   Amazon URL: ${p.url}`).join('\n')}
+REAL AMAZON PRODUCTS — WRITE YOUR ARTICLE AROUND THESE PRODUCTS:
+${products.map((p, i) => {
+  const lines = [`${i + 1}. "${p.name}" — ${p.price} (ASIN: ${p.asin})`];
+  if (p.brand) lines.push(`   Brand: ${p.brand}`);
+  if (p.listPrice && p.listPrice !== p.price) lines.push(`   Was: ${p.listPrice} (discounted)`);
+  lines.push(`   Rating: ${p.rating} (${p.reviewCount > 0 ? p.reviewCount.toLocaleString() + ' reviews' : 'new product'})`);
+  if (p.isPrime) lines.push(`   ✓ Amazon Prime eligible`);
+  if (p.featuresList.length > 0) {
+    lines.push(`   Key Features:`);
+    p.featuresList.slice(0, 5).forEach(f => lines.push(`     • ${f}`));
+  }
+  if (p.description) lines.push(`   Description: ${p.description.substring(0, 300)}`);
+  lines.push(`   URL: ${p.url}`);
+  return lines.join('\n');
+}).join('\n\n')}
 
-IMPORTANT: Use these EXACT product names and prices in your comparisonTable. Do NOT make up products.
+INSTRUCTIONS: Reference these products BY NAME throughout your article sections.
+Mention specific features, prices, and review counts when discussing products.
+The comparison table is handled separately — focus on weaving product details into your content.
+Do NOT make up products. Do NOT include comparison tables in article sections.
 `;
 
     return { products, comparisonRows, productSchemaItems, promptText };
@@ -945,23 +978,46 @@ IMPORTANT: Use these EXACT product names and prices in your comparisonTable. Do 
   if (isApifyAvailable()) {
     try {
       console.log(`[Amazon] Tier 1: Fetching via Apify for: "${keyword}"`);
-      const apifyProducts = await searchProductsViaApify(keyword, 3);
+      addActivityLog('info', `[V3] Apify: Starting Amazon search for "${keyword}"`, { keyword });
+      const apifyResult = await searchProductsViaApify(keyword, 3);
+      const { products: apifyProducts, metadata } = apifyResult;
+
+      addActivityLog('info', `[V3] Apify run ${metadata.runId}: ${metadata.status} in ${Math.round(metadata.elapsedMs / 1000)}s — ${apifyProducts.length} products`, {
+        runId: metadata.runId,
+        runUrl: metadata.runUrl,
+        status: metadata.status,
+        elapsedMs: metadata.elapsedMs,
+        productCount: apifyProducts.length,
+        keyword,
+      });
 
       if (apifyProducts.length > 0) {
         console.log(`[Amazon] Tier 1: Found ${apifyProducts.length} products via Apify`);
+        addActivityLog('success', `[V3] Apify: Found ${apifyProducts.length} Amazon products (${apifyProducts.map(p => p.asin).join(', ')})`, {
+          keyword,
+          asins: apifyProducts.map(p => p.asin),
+          runId: metadata.runId,
+        });
         return formatProductData(apifyProducts.map(p => ({
           title: p.title,
           price: p.price,
-          priceValue: 0,
+          priceValue: p.priceValue,
+          listPrice: p.listPrice,
           asin: p.asin,
           detailPageUrl: p.url,
           rating: p.rating,
-          features: []
+          reviewCount: p.reviewCount,
+          isPrime: p.isPrime,
+          features: p.features,
+          brand: p.brand,
+          description: p.description,
         })));
       }
       console.log(`[Amazon] Tier 1: No products found via Apify`);
+      addActivityLog('warning', `[V3] Apify: 0 products returned for "${keyword}" (run ${metadata.runId})`, { keyword, runId: metadata.runId });
     } catch (error: any) {
       console.warn(`[Amazon] Tier 1 (Apify) failed: ${error.message}`);
+      addActivityLog('error', `[V3] Apify failed: ${error.message}`, { keyword, error: error.message });
     }
   } else {
     console.log(`[Amazon] Tier 1: Apify not available (no APIFY_TOKEN), skipping to Tier 2`);
@@ -7482,8 +7538,12 @@ Target word count: ${serpAnalysis.targetWordCount}+ words\n`
     // 4. Fetch real Amazon products for comparison table
     updateSessionStage(keyword.keyword, '4/7: Amazon Products');
     console.log(`[SEO-V3] [Step 4/8] Fetching Amazon products...`);
+    addActivityLog('info', `[V3] Fetching Amazon products for "${keyword.keyword}"...`, { keyword: keyword.keyword });
     const amazonProducts = await fetchAmazonProductsForKeyword(keyword.keyword, 'Pet Supplies');
     console.log(`[SEO-V3] [Step 4/8] ✓ Amazon: ${amazonProducts.products.length} products found`);
+    addActivityLog(amazonProducts.products.length > 0 ? 'success' : 'warning',
+      `[V3] Amazon products: ${amazonProducts.products.length} found for "${keyword.keyword}"`,
+      { keyword: keyword.keyword, productCount: amazonProducts.products.length });
 
     // 5. Get category-specific content data (brands, authors, FAQs, etc.)
     const categorySlug = context.categorySlug || context.niche || 'DEFAULT';

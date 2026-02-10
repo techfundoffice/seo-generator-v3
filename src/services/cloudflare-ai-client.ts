@@ -5,6 +5,7 @@
  */
 
 import { secrets } from './doppler-secrets';
+import { vercelAI } from './vercel-ai-gateway';
 
 export interface CloudflareAIMessage {
   role: 'system' | 'user' | 'assistant';
@@ -40,6 +41,17 @@ export async function generateWithCloudflareAI(
   prompt: string,
   options: CloudflareAIOptions = {}
 ): Promise<CloudflareAIResult> {
+  // Try Claude via Vercel AI Gateway first (primary provider)
+  try {
+    console.log('[V3] Using Vercel AI Gateway (Claude Sonnet 4.5)');
+    const maxTokens = options.maxTokens || 16000;
+    const result = await vercelAI(prompt, undefined, maxTokens);
+    return { content: result, model: 'claude-sonnet-4.5' };
+  } catch (error: any) {
+    console.warn(`[V3] Vercel AI Gateway failed: ${error.message}, falling back to Cloudflare AI`);
+  }
+
+  // Fallback: Cloudflare AI cascade
   const accountId = secrets.get('CLOUDFLARE_ACCOUNT_ID') || process.env.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN;
   const globalApiKey = secrets.get('CLOUDFLARE_GLOBAL_API_KEY') || process.env.CLOUDFLARE_GLOBAL_API_KEY;
