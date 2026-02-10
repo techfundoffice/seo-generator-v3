@@ -7715,20 +7715,19 @@ Return ONLY valid JSON:
     article.title = seoLimits.title;
     article.metaDescription = seoLimits.metaDescription;
 
-    // 9.5 AUTO-GENERATE COMPARISON TABLE from Amazon Creators API (single source of truth)
-    if (!article.comparisonTable || !article.comparisonTable.rows?.length) {
-      if (amazonProducts.products.length > 0) {
-        article.comparisonTable = {
-          headers: ['Product Name', 'Price', 'Key Features', 'Rating', 'Amazon Search'],
-          rows: amazonProducts.comparisonRows
-        };
-        console.log(`[SEO-V3] ✓ Comparison table from ${amazonProducts.products.length} Amazon products`);
-      } else {
-        const categorySlugForTable = context.categorySlug || context.niche?.replace(/\s+/g, '-').toLowerCase() || 'DEFAULT';
-        const fallbackTable = buildFallbackComparisonTable(categorySlugForTable, keyword.keyword);
-        article.comparisonTable = fallbackTable;
-        console.log(`[SEO-V3] ✓ Comparison table from category fallback (${fallbackTable.rows.length} products for ${categorySlugForTable})`);
-      }
+    // 9.5 COMPARISON TABLE: Real Amazon data ALWAYS wins over AI-generated tables
+    // AI hallucinates product names, prices, and ratings — use verified data instead
+    if (amazonProducts.products.length > 0) {
+      article.comparisonTable = {
+        headers: ['Product Name', 'Price', 'Key Features', 'Rating', 'Amazon Search'],
+        rows: amazonProducts.comparisonRows
+      };
+      console.log(`[SEO-V3] ✓ Comparison table: ${amazonProducts.products.length} REAL Amazon products (overriding AI)`);
+    } else if (!article.comparisonTable || !article.comparisonTable.rows?.length) {
+      const categorySlugForTable = context.categorySlug || context.niche?.replace(/\s+/g, '-').toLowerCase() || 'DEFAULT';
+      const fallbackTable = buildFallbackComparisonTable(categorySlugForTable, keyword.keyword);
+      article.comparisonTable = fallbackTable;
+      console.log(`[SEO-V3] ✓ Comparison table from category fallback (${fallbackTable.rows.length} products for ${categorySlugForTable})`);
     }
 
     // 10. Search for relevant YouTube video using 5-level funnel
