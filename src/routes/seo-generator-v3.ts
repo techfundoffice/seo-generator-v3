@@ -7643,6 +7643,16 @@ Requirements:
 - Include 3-5 external authority links to veterinary sites, manufacturer sites, research journals
 - DO NOT include comparison tables or product tables in the article sections — a real product comparison is injected separately
 
+COPYWRITING PRINCIPLES (MANDATORY):
+- Clarity over cleverness: if you must choose between clear and creative, choose clear
+- Benefits over features: explain what it MEANS for the customer, not just what it does
+- Specificity over vagueness: "cuts weekly reporting from 4 hours to 15 minutes" not "saves time"
+- Use customer language: mirror the words real buyers use in reviews and forums
+- One idea per section: each section advances one argument in a logical flow
+- Use rhetorical questions to engage: "Tired of [pain point]?" makes readers think about their situation
+- NEVER use exclamation points
+- Strong CTAs: "Get [Specific Thing]" not "Learn More" or "Click Here"
+
 INTERNAL LINKING (MANDATORY - REQUIRED FOR SEO SCORE):
 **YOU MUST INCLUDE 8-12 INTERNAL LINKS** in the "internalLinks" array. This is NOT optional.
 Pick 8-12 URLs from this list and create contextual anchor text for each:
@@ -7683,6 +7693,9 @@ AEO (ANSWER ENGINE OPTIMIZATION) - For Featured Snippets & Voice Search:
 - **Table Snippets**: Comparison tables trigger rich snippets - include clear headers and data
 - **FAQ Optimization**: Each FAQ answer should start with a direct 1-sentence answer, then expand
 - **Voice Search Ready**: Write answers that sound natural when read aloud by voice assistants
+- **Step-by-Step Blocks**: For "how to" content, use bold step names: "1. **[Step Name]**: [Action in 1-2 sentences]"
+- **Pros/Cons Blocks**: For evaluation queries ("Is X worth it?"), use bold category labels with specific explanations
+- **Self-Contained Answers**: Write quotable standalone statements that make sense without additional context
 
 GEO (GENERATIVE ENGINE OPTIMIZATION) - For AI Search Engines (ChatGPT, Perplexity, Claude):
 - **Entity Definitions**: Clearly define key terms so AI can cite you: "A [term] is [definition]..."
@@ -7692,6 +7705,9 @@ GEO (GENERATIVE ENGINE OPTIMIZATION) - For AI Search Engines (ChatGPT, Perplexit
 - **Structured Knowledge**: Use consistent formatting so AI can extract structured information
 - **Citation-Worthy Content**: Write statements that AI would want to cite as a source
 - **Semantic Clarity**: Avoid ambiguity - be precise about what, who, when, where, why, how
+- **Statistics with Sources**: "According to [Organization], [stat with number and timeframe]" — stats with sources increase AI citation by 15-30%
+- **Expert Quotes with Attribution**: '"[Quote]," says [Expert Name], [Title] at [Organization]' — named attribution increases citation likelihood
+- **Evidence Sandwich**: Structure claims as [Claim] then [2-3 data points with sources] then [Actionable conclusion]
 
 AI WRITING DETECTION AVOIDANCE:
 - NEVER use em dashes (—). Use commas, colons, or parentheses.
@@ -7700,6 +7716,13 @@ AI WRITING DETECTION AVOIDANCE:
 - AVOID phrases: "In today's fast-paced world", "It's important to note", "Let's delve into"
 - Use varied sentence lengths and natural conversational tone
 - Write like a human expert, not an AI
+- BANNED VERBS: delve, leverage, utilize, foster, bolster, underscore, unveil, navigate, streamline, endeavour, ascertain, elucidate, facilitate, optimise
+- BANNED ADJECTIVES: robust, comprehensive, pivotal, crucial, vital, transformative, cutting-edge, groundbreaking, innovative, seamless, intricate, nuanced, multifaceted, holistic
+- BANNED TRANSITIONS: furthermore, moreover, notwithstanding, "that being said", "at its core", "to put it simply", "it is worth noting that", "in the realm of", "in the landscape of", "in today's [anything]"
+- BANNED OPENERS: "In today's fast-paced world", "In today's digital age", "In an era of", "In the ever-evolving landscape of", "In the realm of", "It's important to note that", "Let's delve into", "Imagine a world where"
+- BANNED CLOSERS: "In conclusion", "To sum up", "By [doing X] you can [achieve Y]", "In the final analysis", "All things considered", "At the end of the day"
+- BANNED PATTERNS: "Whether you're a [X], [Y], or [Z]...", "It's not just [X], it's also [Y]...", "Think of [X] as [elaborate metaphor]...", Starting sentences with "By" + gerund
+- FILLER WORDS TO REMOVE: absolutely, basically, certainly, clearly, definitely, essentially, extremely, fundamentally, incredibly, naturally, obviously, quite, really, significantly, simply, surely, truly, ultimately, undoubtedly, very
 
 Return ONLY valid JSON:
 {
@@ -7737,7 +7760,14 @@ Return ONLY valid JSON:
     {"url": "/cat-boarding/luxury-cat-boarding", "anchorText": "luxury cat boarding", "context": "When traveling without your cat, luxury cat boarding ensures their comfort."}
   ],
   "wordCount": 3500
-}`;
+}
+
+PROGRAMMATIC SEO QUALITY GATES (MANDATORY):
+- Every page MUST provide unique value specific to this keyword, not just swapped variables
+- Proprietary data and original analysis wins over generic public information
+- Match genuine search intent: the page must actually answer what people are searching for
+- No thin content: better to have one great comprehensive article than five shallow ones
+- Quality over quantity: every section must add genuine value, not just fill space`;
 
     // 7. Generate with Cloudflare AI (FREE - keeps Copilot for discovery/keywords only)
     updateSessionStage(keyword.keyword, '5/7: AI Generation');
