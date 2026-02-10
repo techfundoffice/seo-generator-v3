@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import * as cheerio from 'cheerio';
-import { execSync, spawn } from 'child_process';
+import { exec, execSync, spawn } from 'child_process';
+import { promisify } from 'util';
+const execAsync = promisify(exec);
 import * as path from 'path';
 import { secrets } from '../services/doppler-secrets';
 import { generateWithCloudflareAI, isCloudflareAIConfigured } from '../services/cloudflare-ai-client';
@@ -295,7 +297,7 @@ interface PageSpeedQueueItem {
 const pageSpeedQueue: PageSpeedQueueItem[] = [];
 let pageSpeedLastCall = 0;
 let pageSpeedProcessing = false;
-const PAGESPEED_MIN_INTERVAL = 90000; // 90 seconds between checks (was 5s)
+const PAGESPEED_MIN_INTERVAL = 120000; // 120 seconds between checks
 const PAGESPEED_MAX_RETRIES = 3;
 const PAGESPEED_BACKOFF_BASE = 120000; // Start with 2 minute backoff for 429s
 
@@ -355,11 +357,17 @@ async function processPageSpeedQueue() {
       console.log(`[SEO-V3] ⚠️ LCP too slow (${pageSpeed.coreWebVitals.lcp}ms) - may hurt rankings`);
     }
     
-    addActivityLog('info', `[V3] PageSpeed: ${pageSpeed.scores.performance}/100`, {
+    addActivityLog('info', `[V3] PageSpeed: Perf ${pageSpeed.scores.performance}/100 | SEO ${pageSpeed.scores.seo}/100 | A11y ${pageSpeed.scores.accessibility}/100 | BP ${pageSpeed.scores.bestPractices}/100 | LCP ${pageSpeed.coreWebVitals.lcp}ms | CLS ${pageSpeed.coreWebVitals.cls} | TBT ${pageSpeed.coreWebVitals.tbt}ms`, {
       url: item.url,
       performance: pageSpeed.scores.performance,
       seo: pageSpeed.scores.seo,
-      lcp: pageSpeed.coreWebVitals.lcp
+      accessibility: pageSpeed.scores.accessibility,
+      bestPractices: pageSpeed.scores.bestPractices,
+      lcp: pageSpeed.coreWebVitals.lcp,
+      cls: pageSpeed.coreWebVitals.cls,
+      tbt: pageSpeed.coreWebVitals.tbt,
+      fcp: pageSpeed.coreWebVitals.fcp,
+      ttfb: pageSpeed.coreWebVitals.ttfb
     });
     
   } catch (err: any) {
@@ -387,9 +395,11 @@ async function processPageSpeedQueue() {
 }
 
 async function analyzePageSpeedWithRetry(url: string, strategy: 'mobile' | 'desktop', retryCount: number): Promise<PageSpeedResult> {
-  const apiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&strategy=${strategy}&category=performance&category=seo&category=accessibility&category=best-practices`;
+  const googleApiKey = process.env.GOOGLE_API_KEY || '';
+  const keyParam = googleApiKey ? `&key=${googleApiKey}` : '';
+  const apiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&strategy=${strategy}&category=performance&category=seo&category=accessibility&category=best-practices${keyParam}`;
   
-  console.log(`[PageSpeed] Analyzing ${url} (${strategy})${retryCount > 0 ? ` [retry ${retryCount}]` : ''}...`);
+  console.log(`[PageSpeed] Analyzing ${url} (${strategy})${retryCount > 0 ? ` [retry ${retryCount}]` : ''}${googleApiKey ? ' [with API key]' : ' [no API key]'}...`);
   
   const response = await fetch(apiUrl);
   if (!response.ok) {
@@ -1415,24 +1425,22 @@ async function getOrCreateClient(): Promise<any> {
   try {
     const { CopilotClient } = await loadCopilotSDK();
 
-    // Get GitHub token from the correct config directory
-    const { execSync } = require('child_process');
     let ghToken: string;
     try {
-      // Must exclude any existing GITHUB_TOKEN/GH_TOKEN env vars so gh CLI reads from config file
       const cleanEnv = { ...process.env };
       delete cleanEnv.GITHUB_TOKEN;
       delete cleanEnv.GH_TOKEN;
       delete cleanEnv.COPILOT_GITHUB_TOKEN;
 
-      ghToken = execSync('gh auth token', {
+      const { stdout } = await execAsync('gh auth token', {
         encoding: 'utf8',
         env: {
           ...cleanEnv,
           GH_CONFIG_DIR: '/home/runner/workspace/.config/gh',
           HOME: '/home/runner'
         }
-      }).trim();
+      });
+      ghToken = stdout.trim();
       console.log(`🔑 GitHub token acquired (${ghToken.length} chars, starts with ${ghToken.substring(0, 4)})`);
     } catch (e) {
       throw new Error('GitHub auth required. Run: gh auth login');
@@ -1794,18 +1802,111 @@ Return ONLY valid JSON (no markdown, no explanation):
   }
 }
 
+async function fetchGoogleSuggestions(query: string): Promise<string[]> {
+  const https = require('https');
+  return new Promise((resolve) => {
+    const encoded = encodeURIComponent(query);
+    const url = `https://suggestqueries.google.com/complete/search?client=firefox&q=${encoded}`;
+    
+    const req = https.get(url, (res: any) => {
+      let data = '';
+      res.on('data', (chunk: string) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (Array.isArray(parsed) && Array.isArray(parsed[1])) {
+            resolve(parsed[1] as string[]);
+          } else {
+            resolve([]);
+          }
+        } catch {
+          resolve([]);
+        }
+      });
+    });
+    req.on('error', () => resolve([]));
+    req.setTimeout(8000, () => { req.destroy(); resolve([]); });
+  });
+}
+
+async function getGoogleSearchTopics(categoryName: string): Promise<string[]> {
+  const seedPhrases = [
+    `best ${categoryName} for cats`,
+    `cat ${categoryName}`,
+    `how to choose ${categoryName} for cats`,
+    `${categoryName} cat guide`,
+    `${categoryName} for kittens`,
+  ];
+
+  addActivityLog('info', `[V3] Fetching real Google search suggestions for "${categoryName}"...`);
+
+  const allSuggestions: string[] = [];
+  for (const seed of seedPhrases) {
+    const suggestions = await fetchGoogleSuggestions(seed);
+    allSuggestions.push(...suggestions);
+    await new Promise(r => setTimeout(r, 300));
+  }
+
+  const unique = [...new Set(allSuggestions)]
+    .filter(s => s.toLowerCase().includes('cat') || s.toLowerCase().includes('kitten'))
+    .filter(s => s.split(' ').length >= 3);
+
+  console.log(`[SEO-V3] 🔍 Google suggestions returned ${unique.length} unique topics for "${categoryName}"`);
+  return unique;
+}
+
 async function generateCategoryKeywords(category: DiscoveredCategory): Promise<string[]> {
   addActivityLog('info', `[V3] Generating keywords for: ${category.name}`);
-  
+
+  const googleTopics = await getGoogleSearchTopics(category.name);
+
+  if (googleTopics.length >= 5) {
+    addActivityLog('success', `[V3] Found ${googleTopics.length} real Google search topics for ${category.name} - using as primary source`);
+
+    const prompt = `From these REAL Google search suggestions for the "${category.name}" category, pick the 10 best ones for writing helpful articles on catsluvus.com. If there are fewer than 10 good ones, add a few more based on the patterns you see.
+
+REAL SEARCH SUGGESTIONS FROM GOOGLE:
+${googleTopics.map(t => `- ${t}`).join('\n')}
+
+RULES:
+1. Prefer specific, actionable topics over vague ones
+2. Pick a diverse mix - reviews, how-tos, comparisons
+3. Each should work as an article title topic
+4. NEVER add marketing terms (affiliate, deals, discount, coupon, etc.)
+5. Keep the original phrasing when possible - these are what real people search for
+
+Return ONLY a JSON array of keyword strings:
+["keyword one", "keyword two", ...]`;
+
+    try {
+      const result = await generateWithCopilotCLI(prompt, 120000, 2);
+      if (result) {
+        const jsonMatch = result.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          const keywords = JSON.parse(jsonMatch[0]) as string[];
+          console.log(`[SEO-V3] ✅ Generated ${keywords.length} keywords from Google data for ${category.name}`);
+          addActivityLog('success', `[V3] Generated ${keywords.length} data-driven keywords for ${category.name}`);
+          return keywords;
+        }
+      }
+    } catch (error: any) {
+      console.error(`[SEO-V3] ⚠️ Google-based keyword selection failed, falling back: ${error.message}`);
+      addActivityLog('warning', `[V3] Google-based selection failed, using AI fallback`);
+    }
+  } else {
+    addActivityLog('info', `[V3] Only ${googleTopics.length} Google suggestions found for "${category.name}" - using AI generation with banned term filter`);
+  }
+
   const prompt = `Generate exactly 10 SEO keywords for the "${category.name}" category on a cat website (catsluvus.com).
 
 REQUIREMENTS:
-1. Mix of informational and commercial intent
+1. Mix of informational and commercial intent (e.g. "best X for cats", "how to choose X", "X vs Y for cats")
 2. Include long-tail keywords (3-5 words)
-3. Focus on topics with affiliate potential
+3. Focus on topics real cat owners actually search for - product reviews, buying guides, how-to guides, comparisons
 4. Avoid generic terms like "cat" or "cats" alone
-5. Each keyword should be a complete search phrase
-6. Only 10 keywords - quality over quantity, each must be distinct and high-value
+5. Each keyword should be a complete search phrase a real person would type into Google
+6. NEVER include marketing/business terms like "affiliate", "deals", "discount", "coupon", "promo", "commission", "revenue", "monetize", "partner program" - these are NOT real search queries
+7. Only 10 keywords - quality over quantity, each must be distinct and high-value
 
 Return ONLY a JSON array of keyword strings (no markdown, no explanation):
 ["keyword one", "keyword two", ...]`;
@@ -1815,9 +1916,19 @@ Return ONLY a JSON array of keyword strings (no markdown, no explanation):
     if (result) {
       const jsonMatch = result.match(/\[[\s\S]*\]/);
       if (jsonMatch) {
-        const keywords = JSON.parse(jsonMatch[0]) as string[];
-        console.log(`[SEO-V3] ✅ Copilot returned ${keywords.length} keywords for ${category.name}`);
-        addActivityLog('success', `[V3] Generated ${keywords.length} keywords for ${category.name}`);
+        const rawKeywords = JSON.parse(jsonMatch[0]) as string[];
+        const bannedTerms = ['affiliate', 'deal', 'deals', 'discount', 'coupon', 'promo', 'commission', 'revenue', 'monetize', 'monetization', 'partner program', 'cashback', 'rebate', 'referral link', 'sponsored', 'advertise'];
+        const keywords = rawKeywords.filter(kw => {
+          const lower = kw.toLowerCase();
+          const hasBanned = bannedTerms.some(term => lower.includes(term));
+          if (hasBanned) {
+            console.log(`[SEO-V3] 🚫 Filtered spammy keyword: "${kw}"`);
+          }
+          return !hasBanned;
+        });
+        const filtered = rawKeywords.length - keywords.length;
+        console.log(`[SEO-V3] ✅ AI fallback returned ${rawKeywords.length} keywords for ${category.name}${filtered > 0 ? ` (filtered ${filtered} spammy)` : ''}`);
+        addActivityLog('success', `[V3] AI fallback: ${keywords.length} keywords for ${category.name}${filtered > 0 ? ` (removed ${filtered} spammy)` : ''}`);
         return keywords;
       } else {
         console.error(`[SEO-V3] ⚠️ Copilot response had no JSON array for ${category.name}. Response preview: ${result.substring(0, 200)}`);
@@ -2423,9 +2534,10 @@ function buildArticleHtml(
     '</div>';
   }
 
-  // Helper function to build image HTML with lazy loading and ImageObject schema
+  // Helper function to build image HTML with ImageObject schema
   // Uses intrinsic sizing (width/height for aspect ratio) with responsive CSS override
-  const buildImageHtml = (image: GeneratedImage): string => {
+  // isHero=true uses fetchpriority="high" + eager loading for LCP optimization
+  const buildImageHtml = (image: GeneratedImage, isHero = false): string => {
     return `
       <figure class="article-image" itemscope itemtype="https://schema.org/ImageObject">
         <img
@@ -2434,7 +2546,7 @@ function buildArticleHtml(
           width="${image.width}"
           height="${image.height}"
           style="width: 100%; height: auto; max-width: 100%;"
-          loading="lazy"
+          ${isHero ? 'fetchpriority="high" loading="eager"' : 'loading="lazy"'}
           decoding="async"
           itemprop="contentUrl"
         >
@@ -2445,9 +2557,9 @@ function buildArticleHtml(
     `;
   };
 
-  // Get hero image (always generated)
+  // Get hero image (always generated) - uses fetchpriority="high" for LCP
   const heroImage = generatedImages?.find(img => img.imageType === 'hero');
-  const heroImageHtml = heroImage ? buildImageHtml(heroImage) : '';
+  const heroImageHtml = heroImage ? buildImageHtml(heroImage, true) : '';
 
   // Note: Closing images removed per SEO best practices (1-2 images max)
   // Only hero + optional mid-article section image are generated now
@@ -2505,20 +2617,23 @@ function buildArticleHtml(
     `;
   }
 
-  // Build video hero HTML - prominent placement for Google Video indexing
+  // Build video hero HTML - lite-youtube facade for performance (no iframe until click)
   let videoHeroHtml = '';
   if (video) {
+    const vid = video.videoId;
     videoHeroHtml = `
       <section class="video-hero" id="video">
         <p class="video-hero-title">Watch: Expert Guide on ${keyword}</p>
         <div class="video-container">
-          <iframe width="560" height="315" src="${video.embedUrl || `https://www.youtube.com/embed/${video.videoId}`}?rel=0&modestbranding=1" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="eager" title="${video.title}"></iframe>
+          <lite-youtube videoid="${vid}" style="background-image: url('https://i.ytimg.com/vi/${vid}/hqdefault.jpg');" title="${video.title}"></lite-youtube>
         </div>
         <p class="video-hero-meta"><strong>${video.channel}</strong> • ${video.duration || ''} • ${video.views || ''}</p>
         <p class="video-hero-cta">Continue reading below for our complete written guide with pricing, comparisons, and FAQs.</p>
       </section>
     `;
   }
+  // Lite-youtube inline script (only loads iframe on click - saves ~500KB initial load)
+  const liteYoutubeScript = video ? `<script>if(!window.liteYT){window.liteYT=1;document.head.insertAdjacentHTML('beforeend','<style>lite-youtube{display:block;position:relative;width:100%;padding-bottom:56.25%;background-size:cover;background-position:center;cursor:pointer;border-radius:8px}lite-youtube::before{content:"";position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:68px;height:48px;background:url("data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' viewBox=\\'0 0 68 48\\'%3E%3Cpath fill=\\'%23f00\\' d=\\'M66.52 7.74c-.78-2.93-2.49-5.41-5.42-6.19C55.79.13 34 0 34 0S12.21.13 6.9 1.55c-2.93.78-4.63 3.26-5.42 6.19C.06 13.05 0 24 0 24s.06 10.95 1.48 16.26c.78 2.93 2.49 5.41 5.42 6.19C12.21 47.87 34 48 34 48s21.79-.13 27.1-1.55c2.93-.78 4.64-3.26 5.42-6.19C67.94 34.95 68 24 68 24s-.06-10.95-1.48-16.26z\\'/%3E%3Cpath fill=\\'%23fff\\' d=\\'M45 24L27 14v20z\\'/%3E%3C/svg%3E") center/contain no-repeat}lite-youtube:hover::before{filter:brightness(1.1)}</style>');document.addEventListener('click',e=>{const t=e.target.closest('lite-youtube');if(t){const v=t.getAttribute('videoid');t.outerHTML='<div style="position:relative;padding-bottom:56.25%;height:0"><iframe src="https://www.youtube.com/embed/'+v+'?autoplay=1&rel=0" frameborder="0" allow="autoplay;encrypted-media;picture-in-picture" allowfullscreen style="position:absolute;top:0;left:0;width:100%;height:100%;border-radius:8px"></iframe></div>'}})}</script>` : '';
 
   // NOTE: Navigation menu items now handled by Worker HTMLRewriter injection
 
@@ -2544,15 +2659,19 @@ function buildArticleHtml(
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-<!-- Google AdSense -->
-<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-9364522191686432" crossorigin="anonymous"></script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${article.title}</title>
 <meta name="description" content="${article.metaDescription}">
 <link rel="canonical" href="${canonicalUrl}">
+<link rel="preconnect" href="https://i.ytimg.com" crossorigin>
+<link rel="preconnect" href="https://pub.catsluvus.com" crossorigin>
+<link rel="dns-prefetch" href="https://pagead2.googlesyndication.com">
+<link rel="dns-prefetch" href="https://www.googletagmanager.com">
 <link rel="icon" href="https://${safeDomain}/favicon.ico" type="image/x-icon">
 <link rel="apple-touch-icon" href="https://${safeDomain}/apple-touch-icon.png">
+<!-- Google AdSense (deferred) -->
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-9364522191686432" crossorigin="anonymous"></script>
 <meta property="og:title" content="${article.title}">
 <meta property="og:description" content="${article.metaDescription}">
 <meta property="og:url" content="${canonicalUrl}">
@@ -2838,6 +2957,7 @@ article *{max-width:100%}
 </div>
 </main>
 <!-- NOTE: Footer and menu JS injected by Worker HTMLRewriter -->
+${liteYoutubeScript}
 </body>
 </html>`;
 }
@@ -2942,7 +3062,6 @@ async function getGenerationQueueStatus(): Promise<{
 async function generateWithCopilotCLI(prompt: string, timeout: number = 600000, maxRetries: number = 3): Promise<string> {
   const fs = require('fs');
 
-  // Get GitHub token from the correct config directory (fast, ~1s, OK to keep sync)
   let ghToken: string;
   try {
     const cleanEnv = { ...process.env };
@@ -2950,14 +3069,15 @@ async function generateWithCopilotCLI(prompt: string, timeout: number = 600000, 
     delete cleanEnv.GH_TOKEN;
     delete cleanEnv.COPILOT_GITHUB_TOKEN;
 
-    ghToken = execSync('gh auth token', {
+    const { stdout } = await execAsync('gh auth token', {
       encoding: 'utf8',
       env: {
         ...cleanEnv,
         GH_CONFIG_DIR: '/home/runner/workspace/.config/gh',
         HOME: '/home/runner'
       }
-    }).trim();
+    });
+    ghToken = stdout.trim();
     console.log(`🔑 Got GitHub token (${ghToken.length} chars, starts with ${ghToken.substring(0, 4)})`);
   } catch (e) {
     throw new Error('GitHub auth required. Run: gh auth login');
@@ -3153,27 +3273,24 @@ function updateWorkerStats(worker: 'copilot' | 'cloudflare', seoScore: number) {
   workerStats[worker].avgScore = Math.round(workerStats[worker].totalScore / workerStats[worker].count);
 }
 
-// For backward compatibility - spawn-based version (kept for reference)
 async function generateWithCopilotCLISpawn(prompt: string, timeout: number = 600000): Promise<string> {
-  const { spawn, execSync } = require('child_process');
 
-  // Get GitHub token from the correct config directory
   let ghToken: string;
   try {
-    // Must exclude any existing GITHUB_TOKEN/GH_TOKEN env vars so gh CLI reads from config file
     const cleanEnv = { ...process.env };
     delete cleanEnv.GITHUB_TOKEN;
     delete cleanEnv.GH_TOKEN;
     delete cleanEnv.COPILOT_GITHUB_TOKEN;
 
-    ghToken = execSync('gh auth token', {
+    const { stdout } = await execAsync('gh auth token', {
       encoding: 'utf8',
       env: {
         ...cleanEnv,
         GH_CONFIG_DIR: '/home/runner/workspace/.config/gh',
         HOME: '/home/runner'
       }
-    }).trim();
+    });
+    ghToken = stdout.trim();
     console.log(`🔑 Got GitHub token (${ghToken.length} chars, starts with ${ghToken.substring(0, 4)})`);
   } catch (e) {
     throw new Error('GitHub auth required. Run: gh auth login');
@@ -8202,9 +8319,11 @@ async function runV3AutonomousGeneration() {
 // PageSpeedResult interface is defined at the top of the file
 
 async function analyzePageSpeed(url: string, strategy: 'mobile' | 'desktop' = 'mobile'): Promise<PageSpeedResult> {
-  const apiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&strategy=${strategy}&category=performance&category=seo&category=accessibility&category=best-practices`;
+  const googleApiKey = process.env.GOOGLE_API_KEY || '';
+  const keyParam = googleApiKey ? `&key=${googleApiKey}` : '';
+  const apiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&strategy=${strategy}&category=performance&category=seo&category=accessibility&category=best-practices${keyParam}`;
   
-  console.log(`[PageSpeed] Analyzing ${url} (${strategy})...`);
+  console.log(`[PageSpeed] Analyzing ${url} (${strategy})${googleApiKey ? ' [with API key]' : ' [no API key]'}...`);
   
   const response = await fetch(apiUrl);
   if (!response.ok) {
