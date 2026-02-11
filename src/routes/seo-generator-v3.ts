@@ -840,11 +840,20 @@ const CATEGORY_CONTENT_DATA: Record<string, CategoryContentData> = {
       { question: 'What should I know about {keyword}?', answerHint: 'Key considerations' }
     ],
     externalLinks: [
-      { url: 'https://www.chewy.com', text: 'Chewy', context: 'Link in comparison section' },
-      { url: 'https://www.petco.com', text: 'Petco', context: 'Link in comparison section' }
+      { url: 'https://www.aspca.org/pet-care/cat-care', text: 'ASPCA Cat Care', context: 'Authoritative cat care guidance' },
+      { url: 'https://www.vet.cornell.edu/departments-centers-and-institutes/cornell-feline-health-center', text: 'Cornell Feline Health Center', context: 'Veterinary research and feline health' },
+      { url: 'https://www.avma.org/resources-tools/pet-owners/petcare', text: 'AVMA Pet Care', context: 'American Veterinary Medical Association guidance' }
     ]
   }
 };
+
+const UNIVERSAL_AUTHORITY_LINKS = [
+  { url: 'https://www.aspca.org/pet-care/cat-care', text: 'ASPCA Cat Care Guide', domain: 'aspca.org' },
+  { url: 'https://www.vet.cornell.edu/departments-centers-and-institutes/cornell-feline-health-center', text: 'Cornell Feline Health Center', domain: 'cornell.edu' },
+  { url: 'https://www.avma.org/resources-tools/pet-owners/petcare', text: 'AVMA Pet Owner Resources', domain: 'avma.org' },
+  { url: 'https://www.humanesociety.org/resources/cat-care', text: 'Humane Society Cat Care', domain: 'humanesociety.org' },
+  { url: 'https://icatcare.org/advice/', text: 'International Cat Care', domain: 'icatcare.org' }
+];
 
 function getCategoryContentData(categorySlug: string): CategoryContentData {
   const normalizedSlug = categorySlug.toLowerCase()
@@ -869,6 +878,7 @@ interface AmazonProductData {
     listPrice: string;
     asin: string;
     url: string;
+    imageUrl: string;
     rating: string;
     reviewCount: number;
     isPrime: boolean;
@@ -894,7 +904,7 @@ async function fetchAmazonProductsForKeyword(keyword: string, category: string =
   // Helper: convert raw product list to AmazonProductData format
   function formatProductData(rawProducts: Array<{
     title: string; price: string; priceValue?: number; listPrice?: string;
-    asin: string; detailPageUrl?: string; url?: string; rating?: number;
+    asin: string; detailPageUrl?: string; url?: string; imageUrl?: string; rating?: number;
     features?: string[]; brand?: string; description?: string;
     reviewCount?: number; isPrime?: boolean;
   }>): AmazonProductData {
@@ -905,6 +915,7 @@ async function fetchAmazonProductsForKeyword(keyword: string, category: string =
       listPrice: p.listPrice || '',
       asin: p.asin,
       url: p.detailPageUrl || p.url || `https://www.amazon.com/dp/${p.asin}?tag=${AMAZON_TAG}`,
+      imageUrl: p.imageUrl || '',
       rating: p.rating ? `${p.rating}/5` : '4.5/5',
       reviewCount: p.reviewCount || 0,
       isPrime: p.isPrime || false,
@@ -917,6 +928,7 @@ async function fetchAmazonProductsForKeyword(keyword: string, category: string =
 
     const comparisonRows = products.map(p => [
       p.brand ? `${p.name} by ${p.brand}` : p.name,
+      p.price || 'Check Price',
       p.features,
       p.reviewCount > 0 ? `${p.rating} (${p.reviewCount.toLocaleString()} reviews)` : p.rating,
       p.amazonSearch
@@ -927,8 +939,9 @@ async function fetchAmazonProductsForKeyword(keyword: string, category: string =
       "position": index + 1,
       "item": {
         "@type": "Product" as const,
-        "name": p.name,
+        "name": p.name.length > 70 ? p.name.substring(0, 67) + '...' : p.name,
         "description": p.description || `${p.name} - ${p.features}`,
+        "image": p.imageUrl || undefined,
         "brand": p.brand ? { "@type": "Brand" as const, "name": p.brand } : undefined,
         "sku": p.asin,
         "offers": {
@@ -936,7 +949,35 @@ async function fetchAmazonProductsForKeyword(keyword: string, category: string =
           "price": p.priceValue.toString(),
           "priceCurrency": "USD",
           "availability": "https://schema.org/InStock",
-          "url": p.url
+          "url": p.url,
+          "shippingDetails": {
+            "@type": "OfferShippingDetails" as const,
+            "shippingDestination": {
+              "@type": "DefinedRegion" as const,
+              "addressCountry": "US"
+            },
+            "deliveryTime": {
+              "@type": "ShippingDeliveryTime" as const,
+              "businessDays": {
+                "@type": "QuantitativeValue" as const,
+                "minValue": 1,
+                "maxValue": p.isPrime ? 2 : 5
+              }
+            },
+            "shippingRate": {
+              "@type": "MonetaryAmount" as const,
+              "value": p.isPrime ? "0" : "5.99",
+              "currency": "USD"
+            }
+          },
+          "hasMerchantReturnPolicy": {
+            "@type": "MerchantReturnPolicy" as const,
+            "applicableCountry": "US",
+            "returnPolicyCategory": "https://schema.org/MerchantReturnFiniteReturnWindow",
+            "merchantReturnDays": 30,
+            "returnMethod": "https://schema.org/ReturnByMail",
+            "returnFees": "https://schema.org/FreeReturn"
+          }
         },
         "aggregateRating": p.rating ? {
           "@type": "AggregateRating" as const,
@@ -991,26 +1032,92 @@ Do NOT make up products. Do NOT include comparison tables in article sections.
       });
 
       if (apifyProducts.length > 0) {
-        console.log(`[Amazon] Tier 1: Found ${apifyProducts.length} products via Apify`);
-        addActivityLog('success', `[V3] Apify: Found ${apifyProducts.length} Amazon products (${apifyProducts.map(p => p.asin).join(', ')})`, {
-          keyword,
-          asins: apifyProducts.map(p => p.asin),
-          runId: metadata.runId,
-        });
-        return formatProductData(apifyProducts.map(p => ({
-          title: p.title,
-          price: p.price,
-          priceValue: p.priceValue,
-          listPrice: p.listPrice,
-          asin: p.asin,
-          detailPageUrl: p.url,
-          rating: p.rating,
-          reviewCount: p.reviewCount,
-          isPrime: p.isPrime,
-          features: p.features,
-          brand: p.brand,
-          description: p.description,
-        })));
+        const isCatCategory = /cat|kitten|feline/i.test(keyword) || /cat|kitten|feline/i.test(category);
+        let filteredProducts = apifyProducts;
+        if (isCatCategory) {
+          const stopWords = new Set(['for', 'the', 'a', 'an', 'in', 'on', 'with', 'and', 'of', 'to', 'is', 'best', 'top', 'how']);
+          const keywordWords = keyword.toLowerCase().split(/\s+/).filter(w => w.length > 1 && !stopWords.has(w));
+          const keywordLower = keyword.toLowerCase();
+
+          filteredProducts = apifyProducts.filter(p => {
+            const title = (p.title || '').toLowerCase();
+
+            const isDog = /\bdog\b|\bpuppy\b|\bpuppies\b|\bcanine\b/.test(title) && !/\bcat\b|\bkitten\b|\bfeline\b/.test(title);
+            if (isDog) {
+              console.log(`[Amazon] ⚠️ Filtered out dog product: "${p.title}"`);
+              return false;
+            }
+
+            const isFish = /\bfish\b|\baquarium\b|\bfish tank\b|\baquatic\b/.test(title);
+            if (isFish) {
+              console.log(`[Amazon] ⚠️ Filtered out fish product: "${p.title}"`);
+              return false;
+            }
+
+            if ((keywordLower.includes('feeder') || keywordLower.includes('food')) && /\blitter\b|\blitter box\b/.test(title)) {
+              console.log(`[Amazon] ⚠️ Filtered out off-category product (litter for feeder/food keyword): "${p.title}"`);
+              return false;
+            }
+            if (keywordLower.includes('litter') && /\bfeeder\b|\bfood bowl\b/.test(title)) {
+              console.log(`[Amazon] ⚠️ Filtered out off-category product (feeder for litter keyword): "${p.title}"`);
+              return false;
+            }
+
+            if (keywordWords.length > 0) {
+              const hasKeywordMatch = keywordWords.some(w => title.includes(w));
+              if (!hasKeywordMatch) {
+                console.log(`[Amazon] ⚠️ Filtered out irrelevant product (no keyword match): "${p.title}"`);
+                return false;
+              }
+            }
+
+            return true;
+          });
+        }
+
+        if (filteredProducts.length < 3 && isCatCategory && filteredProducts.length < apifyProducts.length) {
+          console.log(`[Amazon] Only ${filteredProducts.length} relevant cat products after filtering, retrying with refined query...`);
+          try {
+            const refinedKeyword = keyword.replace(/step by step|how to|guide|best|top/gi, '').trim() + ' for cats';
+            const retryResult = await searchProductsViaApify(refinedKeyword, 3);
+            const retryProducts = retryResult.products.filter(p => {
+              const title = (p.title || '').toLowerCase();
+              if (/\bdog\b|\bpuppy\b|\bpuppies\b|\bcanine\b/.test(title) && !/\bcat\b|\bkitten\b|\bfeline\b/.test(title)) return false;
+              if (/\bfish\b|\baquarium\b|\bfish tank\b|\baquatic\b/.test(title)) return false;
+              return true;
+            });
+            if (retryProducts.length > filteredProducts.length) {
+              console.log(`[Amazon] Retry found ${retryProducts.length} cat-relevant products with "${refinedKeyword}"`);
+              filteredProducts = retryProducts;
+            }
+          } catch (retryErr: any) {
+            console.warn(`[Amazon] Retry search failed: ${retryErr.message}`);
+          }
+        }
+
+        if (filteredProducts.length > 0) {
+          console.log(`[Amazon] Tier 1: Found ${filteredProducts.length} relevant products via Apify`);
+          addActivityLog('success', `[V3] Apify: Found ${filteredProducts.length} Amazon products (${filteredProducts.map(p => p.asin).join(', ')})`, {
+            keyword,
+            asins: filteredProducts.map(p => p.asin),
+            runId: metadata.runId,
+          });
+          return formatProductData(filteredProducts.map(p => ({
+            title: p.title,
+            price: p.price,
+            priceValue: p.priceValue,
+            listPrice: p.listPrice,
+            asin: p.asin,
+            detailPageUrl: p.url,
+            imageUrl: p.imageUrl,
+            rating: p.rating,
+            reviewCount: p.reviewCount,
+            isPrime: p.isPrime,
+            features: p.features,
+            brand: p.brand,
+            description: p.description,
+          })));
+        }
       }
       console.log(`[Amazon] Tier 1: No products found via Apify`);
       addActivityLog('warning', `[V3] Apify: 0 products returned for "${keyword}" (run ${metadata.runId})`, { keyword, runId: metadata.runId });
@@ -1547,6 +1654,17 @@ async function ensureIndexTrackerInitialized(): Promise<void> {
   }
 }
 const CLOUDFLARE_WORKER_NAME = 'petinsurance';
+
+function getZoneAuthHeaders(): Record<string, string> {
+  const globalKey = secrets.get('CLOUDFLARE_GLOBAL_API_KEY') || process.env.CLOUDFLARE_GLOBAL_API_KEY || '';
+  const email = secrets.get('CLOUDFLARE_EMAIL') || process.env.CLOUDFLARE_EMAIL || '';
+  if (globalKey && email) {
+    return { 'X-Auth-Email': email, 'X-Auth-Key': globalKey };
+  }
+  const token = secrets.get('CLOUDFLARE_API_TOKEN') || process.env.CLOUDFLARE_API_TOKEN || '';
+  return { 'Authorization': `Bearer ${token}` };
+}
+
 // V3 has its own category tracking, independent from V2
 const CATEGORY_STATUS_PREFIX = 'v3:category:status:';
 
@@ -2096,10 +2214,10 @@ async function retryWithBackoff<T>(
 /**
  * Helper to fetch current Worker routes from Cloudflare
  */
-async function fetchWorkerRoutes(cfApiToken: string): Promise<any[]> {
+async function fetchWorkerRoutes(_cfApiToken?: string): Promise<any[]> {
   const listUrl = `https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/workers/routes`;
   const listRes = await fetch(listUrl, {
-    headers: { 'Authorization': `Bearer ${cfApiToken}` }
+    headers: getZoneAuthHeaders()
   });
   if (!listRes.ok) {
     throw new Error(`Failed to list routes: ${listRes.status} ${listRes.statusText}`);
@@ -2185,7 +2303,7 @@ async function ensureWorkerRouteForCategory(category: string): Promise<{ success
           const createRes = await fetch(listUrl, {
             method: 'POST',
             headers: {
-              'Authorization': `Bearer ${cfApiToken}`,
+              ...getZoneAuthHeaders(),
               'Content-Type': 'application/json'
             },
             body: JSON.stringify({
@@ -2507,7 +2625,8 @@ function buildArticleHtml(
     "author": {
       "@type": "Person",
       "name": author.name,
-      "jobTitle": author.title
+      "jobTitle": author.title,
+      "description": author.credentials
     },
     "publisher": {
       "@type": "Organization",
@@ -2623,15 +2742,32 @@ function buildArticleHtml(
       const rating = String(rowArray[3] || '');
 
       let amazonBtnHtml = '';
-      if (hasAmazonColumn && rowArray.length >= 5) {
-        const amazonSearch = rowArray[rowArray.length - 1] || String(rowArray[0]).replace(/\s+/g, '+');
-        const amazonUrl = 'https://www.amazon.com/s?k=' + encodeURIComponent(String(amazonSearch).replace(/\+/g, ' ')) + '&tag=' + amazonTag;
+      const matchedProduct = amazonProductData?.products?.[idx];
+      if (matchedProduct?.asin) {
+        const amazonUrl = 'https://www.amazon.com/dp/' + matchedProduct.asin + '?tag=' + amazonTag;
         amazonBtnHtml = '<a href="' + amazonUrl + '" target="_blank" rel="nofollow sponsored" class="amazon-btn">View on Amazon</a>';
+      } else {
+        const lastCol = String(rowArray[rowArray.length - 1] || '');
+        const lastColLooksLikeSearch = lastCol.includes('+') && !lastCol.includes('/5') && lastCol.length > 5;
+        if (hasAmazonColumn && rowArray.length >= 5) {
+          const amazonSearch = lastCol || String(rowArray[0]).replace(/\s+/g, '+');
+          const amazonUrl = 'https://www.amazon.com/s?k=' + encodeURIComponent(String(amazonSearch).replace(/\+/g, ' ')) + '&tag=' + amazonTag;
+          amazonBtnHtml = '<a href="' + amazonUrl + '" target="_blank" rel="nofollow sponsored" class="amazon-btn">View on Amazon</a>';
+        } else if (lastColLooksLikeSearch && rowArray.length >= 4) {
+          const amazonSearch = lastCol;
+          const amazonUrl = 'https://www.amazon.com/s?k=' + encodeURIComponent(String(amazonSearch).replace(/\+/g, ' ')) + '&tag=' + amazonTag;
+          amazonBtnHtml = '<a href="' + amazonUrl + '" target="_blank" rel="nofollow sponsored" class="amazon-btn">View on Amazon</a>';
+        } else if (rowArray.length >= 2) {
+          const amazonSearch = String(rowArray[0]).replace(/[^a-zA-Z0-9\s]/g, '').split(' ').slice(0, 5).join('+');
+          const amazonUrl = 'https://www.amazon.com/s?k=' + encodeURIComponent(amazonSearch.replace(/\+/g, ' ')) + '&tag=' + amazonTag;
+          amazonBtnHtml = '<a href="' + amazonUrl + '" target="_blank" rel="nofollow sponsored" class="amazon-btn">View on Amazon</a>';
+        }
       }
 
-      const ratingNum = parseFloat(rating) || 0;
+      const ratingNum = Math.min(parseFloat(rating) || 0, 5);
       const fullStars = Math.floor(ratingNum);
-      const starsHtml = '\u2605'.repeat(fullStars) + (ratingNum % 1 >= 0.5 ? '\u00BD' : '') + '\u2606'.repeat(5 - Math.ceil(ratingNum));
+      const emptyStars = Math.max(0, 5 - Math.ceil(ratingNum));
+      const starsHtml = '\u2605'.repeat(fullStars) + (ratingNum % 1 >= 0.5 ? '\u00BD' : '') + '\u2606'.repeat(emptyStars);
 
       const ratingHtml = ratingNum > 0 ? '<span class="pick-rating"><span class="stars">' + starsHtml + '</span> ' + rating + '</span>' : '';
       const featuresHtml = features && features !== 'Premium quality' ? '<span class="pick-features">' + features + '</span>' : '';
@@ -2779,7 +2915,7 @@ function buildArticleHtml(
       return `<a href="${articleUrl}" class="related-card"><span class="related-category">${item.category.replace(/-/g, ' ').toUpperCase()}</span><span class="related-title">${item.anchorText}</span></a>`;
     }).join('');
     relatedArticlesHtml = `
-      <section class="related-articles">
+      <section class="v3-related-articles">
         <h2>You Might Also Like</h2>
         <div class="related-grid">${relatedCards}</div>
       </section>
@@ -2806,14 +2942,14 @@ function buildArticleHtml(
 <meta property="og:description" content="${article.metaDescription}">
 <meta property="og:url" content="${canonicalUrl}">
 <meta property="og:type" content="article">
-<meta property="og:image" content="${heroImage?.url || `https://${safeDomain}/img${safeBasePath}/${slug}/hero.png`}">
+<meta property="og:image" content="${(heroImage?.url?.startsWith('http') ? heroImage.url : null) || `https://${safeDomain}/img${safeBasePath}/${slug}/hero.png`}">
 <meta property="og:image:width" content="1024">
 <meta property="og:image:height" content="768">
 <meta property="og:site_name" content="${safeSiteName}">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="${article.title}">
 <meta name="twitter:description" content="${article.metaDescription}">
-<meta name="twitter:image" content="${heroImage?.url || `https://${safeDomain}/img${safeBasePath}/${slug}/hero.png`}">
+<meta name="twitter:image" content="${(heroImage?.url?.startsWith('http') ? heroImage.url : null) || `https://${safeDomain}/img${safeBasePath}/${slug}/hero.png`}">
 <script type="application/ld+json">${JSON.stringify(articleSchema)}</script>
 <script type="application/ld+json">${JSON.stringify(breadcrumbSchema)}</script>
 ${faqSchema ? `<script type="application/ld+json">${JSON.stringify(faqSchema)}</script>` : ''}
@@ -2885,8 +3021,15 @@ article *{max-width:100%}
 .author-box{display:flex;gap:16px;padding:20px;background:#f8f9fa;border-radius:8px;margin:24px 0;border-left:4px solid var(--wc-color-primary)}
 .author-box img{width:80px;height:80px;border-radius:50%;object-fit:cover;flex-shrink:0}
 .author-info h4{margin:0 0 4px;color:var(--wc-color-primary)}
+.author-info .written-by{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#999;margin:0 0 2px}
 .author-info .credentials{font-size:14px;color:#666;margin-bottom:8px}
 .author-info .bio{font-size:15px;line-height:1.6}
+.author-info .date-info{font-size:13px;color:#888;margin-top:6px}
+.trusted-sources{margin:40px 0;padding:24px;background:#f0f7f4;border-radius:8px;border-left:4px solid #2d6a4f}
+.trusted-sources h2{color:#2d6a4f;font-size:20px;margin-bottom:12px}
+.trusted-sources ul{list-style:none;padding:0;margin:0}
+.trusted-sources li{padding:6px 0}
+.trusted-sources a{color:#2d6a4f;text-decoration:underline;font-weight:500}
 
 /* Quick Answer Box */
 .quick-answer{background:#fff3cd;border:2px solid #ffc107;border-radius:8px;padding:20px 25px;margin:20px 0 30px 0;font-size:1.1em;line-height:1.7}
@@ -2996,8 +3139,8 @@ article *{max-width:100%}
 .toc a:hover{color:var(--wc-color-primary-dark);border-bottom-style:solid}
 
 /* Related Articles */
-.related-articles{margin-top:48px;padding-top:32px;border-top:2px solid #e2e8f0}
-.related-articles h2{margin-bottom:20px}
+.v3-related-articles{margin-top:48px;padding-top:32px;border-top:2px solid #e2e8f0}
+.v3-related-articles h2{margin-bottom:20px}
 .related-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:16px}
 .related-card{display:flex;flex-direction:column;padding:16px;background:#f8f9fa;border:1px solid #e2e8f0;border-radius:8px;text-decoration:none;transition:box-shadow .2s,transform .2s}
 .related-card:hover{box-shadow:0 4px 12px rgba(0,0,0,.1);transform:translateY(-2px)}
@@ -3037,11 +3180,13 @@ article *{max-width:100%}
   ${videoHeroHtml}
 
   <div class="author-box" itemprop="author" itemscope itemtype="https://schema.org/Person">
-    <img src="${author.image || 'https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=100&h=100&fit=crop'}" alt="${author.name}" itemprop="image" loading="lazy">
+    <img src="${author.image || 'https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=100&h=100&fit=crop'}" alt="${author.name}, ${author.title}" itemprop="image" loading="lazy">
     <div class="author-info">
+      <p class="written-by">Written by</p>
       <h4 itemprop="name">${author.name}</h4>
-      <p class="credentials" itemprop="jobTitle">${author.title}</p>
-      <p class="bio">${author.credentials}</p>
+      <p class="credentials" itemprop="jobTitle">${author.title} | ${author.credentials}</p>
+      <p class="bio">${author.bio || ''}</p>
+      <p class="date-info">Last Updated: <time itemprop="dateModified" datetime="${dateNow}">${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</time></p>
     </div>
   </div>
 
@@ -3079,6 +3224,15 @@ article *{max-width:100%}
   <section class="conclusion">
     <h2>Conclusion</h2>
     ${article.conclusion || ''}
+  </section>
+
+  <section class="trusted-sources">
+    <h2>Trusted Sources & References</h2>
+    <ul>
+      ${UNIVERSAL_AUTHORITY_LINKS.slice(0, 3).map(link => 
+        `<li><a href="${link.url}" target="_blank" rel="noopener noreferrer">${link.text}</a></li>`
+      ).join('\n      ')}
+    </ul>
   </section>
 
   ${relatedArticlesHtml}
@@ -3161,23 +3315,31 @@ async function getGenerationQueueStatus(): Promise<{
   const allKeywords = getPrioritizedKeywords();
 
   let highPending = 0, mediumPending = 0, lowPending = 0;
+  let v3Generated = 0;
 
   for (const kw of allKeywords) {
     if (!existingSlugs.has(kw.slug)) {
       if (kw.priority === 'high') highPending++;
       else if (kw.priority === 'medium') mediumPending++;
       else lowPending++;
+    } else {
+      v3Generated++;
     }
   }
 
-  const generated = existingSlugs.size;
-  const remaining = allKeywords.length - generated;
+  const remaining = allKeywords.length - v3Generated;
+
+  // Also count V3 category articles from KV (category:slug format)
+  const v3CategoryArticles = Array.from(existingSlugs).filter(s => s.includes(':')).length;
+  const totalV3Generated = Math.max(v3Generated, v3CategoryArticles);
 
   return {
-    totalKeywords: allKeywords.length,
-    generated,
-    remaining,
-    percentComplete: ((generated / allKeywords.length) * 100).toFixed(2),
+    totalKeywords: allKeywords.length || totalV3Generated,
+    generated: totalV3Generated,
+    remaining: Math.max(0, remaining),
+    percentComplete: allKeywords.length > 0 
+      ? Math.min(100, (totalV3Generated / allKeywords.length) * 100).toFixed(2)
+      : '0.00',
     nextKeyword: getNextKeyword(existingSlugs),
     topPending: { high: highPending, medium: mediumPending, low: lowPending }
   };
@@ -4772,23 +4934,10 @@ async function purgeSitemapCache(cfApiToken: string, categorySlug?: string): Pro
   try {
     const purgeUrl = `https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/purge_cache`;
 
-    // Check for Global API Key (has full permissions including cache purge)
-    const globalApiKey = secrets.get('CLOUDFLARE_GLOBAL_API_KEY') || process.env.CLOUDFLARE_GLOBAL_API_KEY;
-    const accountEmail = 'Webmaster@techfundoffice.com';
-
-    // Build headers based on available credentials
     const headers: Record<string, string> = {
+      ...getZoneAuthHeaders(),
       'Content-Type': 'application/json'
     };
-
-    if (globalApiKey) {
-      // Use Global API Key authentication (full access)
-      headers['X-Auth-Email'] = accountEmail;
-      headers['X-Auth-Key'] = globalApiKey;
-    } else {
-      // Fall back to API Token (may not have cache purge permission)
-      headers['Authorization'] = `Bearer ${cfApiToken}`;
-    }
 
     // Use dynamic category for sitemap URL
     const category = categorySlug || v3CategoryContext?.categorySlug || 'petinsurance';
@@ -4879,17 +5028,19 @@ function addActivityLog(
   console.log(`[SEO-GEN] ${type.toUpperCase()}: ${message}`, details || '');
 }
 
-// Stats tracking (uses actual keyword count)
+// Stats tracking (dynamic — updated from KV categories)
 let stats = {
-  totalKeywords: ALL_KEYWORDS.length,
+  totalKeywords: 0,
   generated: 0,
-  pending: ALL_KEYWORDS.length,
-  percentComplete: '0.0'
+  pending: 0,
+  percentComplete: '0.0',
+  categoriesComplete: 0,
+  categoriesTotal: 0,
 };
 
 // Add startup log entry so the activity log is never blank after restart
 addActivityLog('info', `V3 Engine started at ${new Date().toISOString().replace('T', ' ').slice(0, 19)} UTC`, {
-  totalKeywords: ALL_KEYWORDS.length,
+  totalKeywords: 0,
   version: 'V3'
 });
 
@@ -4960,20 +5111,94 @@ function recordSessionError(message: string) {
   sessionHealth.currentStageStartTime = null;
 }
 
+let statusCache: { data: any; timestamp: number } | null = null;
+const STATUS_CACHE_TTL = 60_000;
+
+async function fetchV3StatusFromKV(): Promise<any> {
+  if (statusCache && Date.now() - statusCache.timestamp < STATUS_CACHE_TTL) {
+    return statusCache.data;
+  }
+
+  let totalKeywords = 0;
+  let generated = 0;
+  let categoriesComplete = 0;
+  let categoriesTotal = 0;
+  const categoryBreakdown: Record<string, { total: number; completed: number; status: string }> = {};
+
+  const cfToken = process.env.CLOUDFLARE_API_TOKEN || '';
+
+  const kvUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/keys?prefix=v3%3Acategory%3Astatus%3A&per_page=100`;
+  const kvResp = await fetch(kvUrl, {
+    headers: { 'Authorization': `Bearer ${cfToken}` }
+  });
+  if (!kvResp.ok) throw new Error(`KV keys fetch failed: ${kvResp.status}`);
+
+  const kvData = await kvResp.json() as any;
+  const categoryKeys: string[] = (kvData.result || []).map((k: any) => k.name);
+  categoriesTotal = categoryKeys.length;
+
+  const batchSize = 10;
+  for (let i = 0; i < categoryKeys.length; i += batchSize) {
+    const batch = categoryKeys.slice(i, i + batchSize);
+    const results = await Promise.allSettled(batch.map(async (key) => {
+      const valUrl = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/storage/kv/namespaces/${CLOUDFLARE_KV_NAMESPACE_ID}/values/${encodeURIComponent(key)}`;
+      const valResp = await fetch(valUrl, {
+        headers: { 'Authorization': `Bearer ${cfToken}` }
+      });
+      if (!valResp.ok) return null;
+      const catData = await valResp.json() as any;
+      const catSlug = key.replace('v3:category:status:', '');
+      const total = catData.expectedCount || catData.articleCount || 0;
+      const completed = catData.articleCount || 0;
+      const catStatus = catData.status || 'unknown';
+      return { catSlug, total, completed, catStatus };
+    }));
+
+    for (const r of results) {
+      if (r.status === 'fulfilled' && r.value) {
+        const { catSlug, total, completed, catStatus } = r.value;
+        totalKeywords += total;
+        generated += completed;
+        if (catStatus === 'completed') categoriesComplete++;
+        categoryBreakdown[catSlug] = { total, completed, status: catStatus };
+      }
+    }
+  }
+
+  const pending = totalKeywords - generated;
+  const percentComplete = totalKeywords > 0 ? ((generated / totalKeywords) * 100).toFixed(1) : '0.0';
+
+  stats.totalKeywords = totalKeywords;
+  stats.generated = generated;
+  stats.pending = pending;
+  stats.percentComplete = percentComplete;
+  stats.categoriesComplete = categoriesComplete;
+  stats.categoriesTotal = categoriesTotal;
+
+  const data = {
+    totalKeywords,
+    pagesComplete: generated,
+    pagesNeeded: pending,
+    percentComplete,
+    categoriesComplete,
+    categoriesTotal,
+    categoryBreakdown,
+    lastUpdated: new Date().toISOString(),
+    version: 'v3',
+    skillsEnabled: true
+  };
+
+  statusCache = { data, timestamp: Date.now() };
+  return data;
+}
+
 /**
  * Get generator status
  */
 router.get('/status', async (_req: Request, res: Response) => {
   try {
-    res.json({
-      totalKeywords: stats.totalKeywords,
-      pagesComplete: stats.generated,
-      pagesNeeded: stats.pending,
-      percentComplete: stats.percentComplete,
-      lastUpdated: new Date().toISOString(),
-      version: 'v3',
-      skillsEnabled: true
-    });
+    const data = await fetchV3StatusFromKV();
+    res.json(data);
   } catch (error: any) {
     res.status(500).json({
       error: error.message || 'Failed to get status'
@@ -5043,14 +5268,42 @@ function generateProductSchema(
       "position": index + 1,
       "item": {
         "@type": "Product",
-        "name": productName,
+        "name": productName.length > 70 ? productName.substring(0, 67) + '...' : productName,
         "description": description,
         "offers": {
           "@type": "Offer",
           "price": priceValue,
           "priceCurrency": "USD",
           "availability": "https://schema.org/InStock",
-          "url": amazonUrl
+          "url": amazonUrl,
+          "shippingDetails": {
+            "@type": "OfferShippingDetails",
+            "shippingDestination": {
+              "@type": "DefinedRegion",
+              "addressCountry": "US"
+            },
+            "deliveryTime": {
+              "@type": "ShippingDeliveryTime",
+              "businessDays": {
+                "@type": "QuantitativeValue",
+                "minValue": 1,
+                "maxValue": 5
+              }
+            },
+            "shippingRate": {
+              "@type": "MonetaryAmount",
+              "value": "5.99",
+              "currency": "USD"
+            }
+          },
+          "hasMerchantReturnPolicy": {
+            "@type": "MerchantReturnPolicy",
+            "applicableCountry": "US",
+            "returnPolicyCategory": "https://schema.org/MerchantReturnFiniteReturnWindow",
+            "merchantReturnDays": 30,
+            "returnMethod": "https://schema.org/ReturnByMail",
+            "returnFees": "https://schema.org/FreeReturn"
+          }
         }
       }
     };
@@ -5284,30 +5537,54 @@ async function analyzeSERP(keyword: string): Promise<{
       }
     }
 
-    // Fallback to DuckDuckGo Instant Answer API (FREE, no API key required)
+    // Fallback to DuckDuckGo HTML search (FREE, no API key, returns REAL search results)
     if (results.length === 0) {
-      console.log('🦆 [SERP] Trying DuckDuckGo (free, no API key)...');
+      console.log('🦆 [SERP] Scraping DuckDuckGo HTML search results...');
       try {
+        const ddgController = new AbortController();
+        const ddgTimeout = setTimeout(() => ddgController.abort(), 8000);
         const ddgResponse = await fetch(
-          `https://api.duckduckgo.com/?q=${encodeURIComponent(keyword)}&format=json&no_html=1&skip_disambig=1`
-        );
-        if (ddgResponse.ok) {
-          const ddgData = await ddgResponse.json() as any;
-          const relatedTopics = ddgData?.RelatedTopics || [];
-          results = relatedTopics
-            .filter((t: any) => t.Text && t.FirstURL)
-            .slice(0, 10)
-            .map((t: any) => ({
-              title: t.Text?.split(' - ')[0] || t.Text?.substring(0, 60) || '',
-              description: t.Text || '',
-              link: t.FirstURL || ''
-            }));
-          if (results.length > 0) {
-            console.log(`✅ [SERP] DuckDuckGo returned ${results.length} related topics`);
+          `https://html.duckduckgo.com/html/?q=${encodeURIComponent(keyword)}`,
+          {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml',
+              'Accept-Language': 'en-US,en;q=0.9',
+            },
+            signal: ddgController.signal,
           }
+        );
+        clearTimeout(ddgTimeout);
+        if (ddgResponse.ok) {
+          const ddgHtml = await ddgResponse.text();
+          const $ddg = cheerio.load(ddgHtml);
+          $ddg('.result').each((i, el) => {
+            if (i >= 10) return false;
+            const titleEl = $ddg(el).find('.result__a');
+            const snippetEl = $ddg(el).find('.result__snippet');
+            const title = titleEl.text().trim();
+            let link = titleEl.attr('href') || '';
+            if (link.startsWith('//duckduckgo.com/l/?uddg=')) {
+              try {
+                const parsed = new URL('https:' + link);
+                link = decodeURIComponent(parsed.searchParams.get('uddg') || link);
+              } catch { /* keep original */ }
+            }
+            const description = snippetEl.text().trim();
+            if (title && link && !link.includes('duckduckgo.com')) {
+              results.push({ title, description, link });
+            }
+          });
+          if (results.length > 0) {
+            console.log(`✅ [SERP] DuckDuckGo HTML returned ${results.length} real search results`);
+          } else {
+            console.log('⚠️ [SERP] DuckDuckGo HTML returned 0 parseable results');
+          }
+        } else {
+          console.log(`⚠️ [SERP] DuckDuckGo HTML failed: ${ddgResponse.status}`);
         }
       } catch (ddgError: any) {
-        console.log(`⚠️ [SERP] DuckDuckGo failed: ${ddgError.message}`);
+        console.log(`⚠️ [SERP] DuckDuckGo HTML scrape failed: ${ddgError.message}`);
       }
     }
 
@@ -5479,13 +5756,17 @@ async function scrapeCompetitorPage(url: string): Promise<{
       }
     });
 
-    // Extract key entities (brand names, insurance providers)
+    // Extract key entities (brand names, product names, industry terms)
     const entities: string[] = [];
     const entityPatterns = [
-      'Lemonade', 'Healthy Paws', 'Trupanion', 'ASPCA', 'Embrace', 'Nationwide', 
-      'Pets Best', 'Figo', 'MetLife', 'Spot', 'Pumpkin', 'Fetch', 'ManyPets',
-      'Pawlicy', 'veterinarian', 'deductible', 'premium', 'reimbursement',
-      'waiting period', 'pre-existing', 'hereditary', 'wellness'
+      'PetSafe', 'Catit', 'SureFeed', 'Cat Mate', 'Petlibro', 'WOpet', 'HoneyGuaridan',
+      'Litter-Robot', 'Modkat', 'PetKit', 'Feliway', 'Jackson Galaxy', 'Frisco',
+      'Chewy', 'Purina', 'Royal Canin', 'Hill\'s', 'Blue Buffalo', 'Fancy Feast',
+      'BPA-free', 'stainless steel', 'programmable', 'smart', 'WiFi', 'app-controlled',
+      'portion control', 'timer', 'battery backup', 'dishwasher safe', 'BPA free',
+      'veterinarian', 'ASPCA', 'microchip', 'GPS', 'calming', 'anxiety',
+      'Lemonade', 'Healthy Paws', 'Trupanion', 'Embrace', 'Nationwide', 'Pets Best',
+      'Figo', 'MetLife', 'Spot', 'Pumpkin', 'Fetch', 'ManyPets', 'Pawlicy'
     ];
     const bodyText = $('body').text().toLowerCase();
     entityPatterns.forEach(entity => {
@@ -5558,13 +5839,18 @@ async function analyzeCompetitorPages(urls: string[]): Promise<{
 function extractTopics(text: string, keyword: string): string[] {
   const topics = new Set<string>();
   const patterns = [
-    'cost', 'price', 'cheap', 'affordable', 'expensive', 'worth it',
-    'best', 'top', 'review', 'comparison', 'vs', 'rated',
-    'coverage', 'deductible', 'premium', 'reimbursement', 'payout',
-    'breed', 'puppy', 'kitten', 'senior', 'young', 'age',
-    'accident', 'illness', 'wellness', 'preventive', 'routine',
-    'claim', 'wait', 'exclude', 'pre-existing', 'hereditary',
-    'lemonade', 'healthy paws', 'trupanion', 'embrace', 'nationwide', 'pets best'
+    'cost', 'price', 'cheap', 'affordable', 'expensive', 'worth it', 'budget',
+    'best', 'top', 'review', 'comparison', 'vs', 'rated', 'recommended',
+    'how to', 'guide', 'tips', 'step by step', 'tutorial', 'setup',
+    'pros and cons', 'benefits', 'features', 'specifications', 'dimensions',
+    'indoor', 'outdoor', 'kitten', 'senior cat', 'multi-cat', 'large cat',
+    'automatic', 'smart', 'wifi', 'app', 'programmable', 'timer',
+    'cleaning', 'maintenance', 'durable', 'safe', 'bpa free', 'stainless steel',
+    'amazon', 'chewy', 'walmart', 'where to buy', 'discount', 'sale',
+    'veterinarian', 'vet recommended', 'safety', 'health', 'anxiety', 'stress',
+    'petSafe', 'catit', 'litter-robot', 'feliway', 'frisco',
+    'coverage', 'deductible', 'premium', 'reimbursement', 'wellness',
+    'lemonade', 'healthy paws', 'trupanion', 'embrace', 'nationwide'
   ];
 
   patterns.forEach(p => {
@@ -5575,7 +5861,10 @@ function extractTopics(text: string, keyword: string): string[] {
 }
 
 function identifyContentGaps(keyword: string, existingTopics: string[]): string[] {
-  const allPossibleTopics = [
+  const kw = keyword.toLowerCase();
+  const isInsurance = kw.includes('insurance') || kw.includes('coverage') || kw.includes('policy');
+  
+  const allPossibleTopics = isInsurance ? [
     'actual customer claim amounts with real dollar figures',
     'veterinarian expert recommendations and quotes',
     'breed-specific pricing data tables',
@@ -5589,6 +5878,20 @@ function identifyContentGaps(keyword: string, existingTopics: string[]): string[
     'emergency vet cost breakdown by procedure',
     'waiting period comparison chart',
     'pre-existing condition workarounds'
+  ] : [
+    'detailed product comparison table with specs and prices',
+    'real customer reviews and common complaints',
+    'veterinarian or expert recommendations',
+    'step-by-step setup and installation guide',
+    'maintenance and cleaning instructions',
+    'safety considerations and potential hazards',
+    'best options for multi-cat households',
+    'budget-friendly alternatives under $30',
+    'premium options with smart features and WiFi',
+    'size guide for kittens vs large breed cats',
+    'common problems and troubleshooting fixes',
+    'where to buy for best price with discount codes',
+    'durability and long-term value assessment'
   ];
 
   // Return topics not well covered by competitors
@@ -7353,35 +7656,17 @@ router.get('/completed-categories', async (_req: Request, res: Response) => {
  */
 router.get('/queue', async (_req: Request, res: Response) => {
   try {
-    const queueStatus = await getGenerationQueueStatus();
-    const priorityStats = getPriorityStats();
-    const topKeywords = getTopKeywords(5);
-
-    // Get top pending keywords for each priority
-    const existingSlugs = await fetchExistingArticleSlugs();
-    const pendingHigh = topKeywords.high.filter(k => !existingSlugs.has(k.slug));
-    const pendingMedium = topKeywords.medium.filter(k => !existingSlugs.has(k.slug));
-    const pendingLow = topKeywords.low.filter(k => !existingSlugs.has(k.slug));
+    const v3Status = await fetchV3StatusFromKV();
 
     res.json({
       status: 'ok',
       queue: {
-        totalKeywords: queueStatus.totalKeywords,
-        generated: queueStatus.generated,
-        remaining: queueStatus.remaining,
-        percentComplete: queueStatus.percentComplete
+        totalKeywords: v3Status.totalKeywords,
+        generated: v3Status.pagesComplete,
+        remaining: v3Status.pagesNeeded,
+        percentComplete: v3Status.percentComplete
       },
-      priorityBreakdown: {
-        total: priorityStats.byPriority,
-        pending: queueStatus.topPending
-      },
-      categoryBreakdown: priorityStats.byCategory,
-      nextToGenerate: queueStatus.nextKeyword,
-      samplePending: {
-        high: pendingHigh.slice(0, 5).map(k => ({ keyword: k.keyword, score: k.score })),
-        medium: pendingMedium.slice(0, 5).map(k => ({ keyword: k.keyword, score: k.score })),
-        low: pendingLow.slice(0, 5).map(k => ({ keyword: k.keyword, score: k.score }))
-      },
+      categoryBreakdown: v3Status.categoryBreakdown || {},
       autonomousRunning
     });
   } catch (error: any) {
@@ -7906,6 +8191,7 @@ async function runV3AutonomousResearch(): Promise<CategoryContext | null> {
 }
 
 async function generateV3Article(keyword: KeywordData, context: CategoryContext): Promise<boolean> {
+  let currentStep = 'init';
   try {
     console.log(`[SEO-V3] 📝 Generating: "${keyword.keyword}"`);
     addActivityLog('generating', `[V3] Generating: "${keyword.keyword}"`, {
@@ -7916,6 +8202,7 @@ async function generateV3Article(keyword: KeywordData, context: CategoryContext)
     const slug = keyword.slug;
 
     // 1. SERP Analysis - Analyze what's ranking #1-10 to beat competitors
+    currentStep = '1/7: SERP Analysis';
     updateSessionStage(keyword.keyword, '1/7: SERP Analysis');
     console.log(`[SEO-V3] [Step 1/7] SERP analysis for: "${keyword.keyword}"`);
     const serpAnalysis = await analyzeSERP(keyword.keyword);
@@ -7941,6 +8228,7 @@ Target word count: ${serpAnalysis.targetWordCount}+ words\n`
       : '';
 
     // 2. Fetch People Also Ask questions
+    currentStep = '2/7: People Also Ask';
     updateSessionStage(keyword.keyword, '2/7: People Also Ask');
     console.log(`[SEO-V3] [Step 2/7] Fetching PAA questions...`);
     const paaQuestions = await fetchPAAQuestions(keyword.keyword);
@@ -7950,6 +8238,7 @@ Target word count: ${serpAnalysis.targetWordCount}+ words\n`
       : '';
 
     // 3. Get existing articles for internal linking (BOTH same-category AND cross-category)
+    currentStep = '3/7: Internal Linking';
     updateSessionStage(keyword.keyword, '3/7: Internal Linking');
     console.log(`[SEO-V3] [Step 3/7] Fetching existing article slugs...`);
     const existingSlugs = await fetchExistingArticleSlugsForCategory(context.kvPrefix);
@@ -7971,6 +8260,7 @@ Target word count: ${serpAnalysis.targetWordCount}+ words\n`
     const existingArticlesList = allArticleUrls.join('\n');
 
     // 4. Fetch real Amazon products for comparison table
+    currentStep = '4/7: Amazon Products';
     updateSessionStage(keyword.keyword, '4/7: Amazon Products');
     console.log(`[SEO-V3] [Step 4/8] Fetching Amazon products...`);
     addActivityLog('info', `[V3] Fetching Amazon products for "${keyword.keyword}"...`, { keyword: keyword.keyword });
@@ -8054,29 +8344,56 @@ STRICT REQUIREMENTS:
 - Actual product names you know exist = CORRECT`;
     }
 
+    const faqTopicKeyword = keyword.keyword
+      .replace(/^(reviews?\s+of|best|top|guide\s+to|how\s+to\s+choose|choosing\s+the\s+right)\s+/i, '')
+      .trim();
     const categoryFaqExamples = categoryContent.faqTemplates.slice(0, 8).map(faq => 
-      `{"question": "${faq.question.replace('{keyword}', keyword.keyword)}", "answer": "${faq.answerHint}, then 150+ word expansion"}`
+      `{"question": "${faq.question.replace('{keyword}', faqTopicKeyword)}", "answer": "${faq.answerHint}, then 150+ word expansion"}`
     ).join(',\n    ');
 
     const categoryExternalLinkExamples = categoryContent.externalLinks.map(link =>
       `{"url": "${link.url}", "text": "${link.text}", "context": "${link.context}"}`
     ).join(',\n    ');
 
+    // Build product grounding text for inline injection into requirements
+    let productGroundingText = '';
+    let productNamesList: string[] = [];
+    if (amazonProducts.products.length > 0) {
+      productNamesList = amazonProducts.products.map((p: any) => p.name || p.title || '').filter(Boolean);
+      const productSummary = amazonProducts.products.map((p: any, i: number) => 
+        `${i + 1}. "${p.name || p.title}" (${p.price || 'check price'}, ${p.rating || 'N/A'})`
+      ).join('\n');
+      productGroundingText = `
+CRITICAL — PRODUCT ACCURACY REQUIREMENT:
+This article is about "${keyword.keyword}". You MUST discuss these REAL products that match this topic:
+${productSummary}
+
+DO NOT recommend products from a DIFFERENT category. For example:
+- If the topic is "GPS trackers for cats", do NOT recommend DNA testing kits, food bowls, or toys
+- If the topic is "automatic feeders", do NOT recommend litter boxes or carriers
+- ONLY discuss products that a customer searching "${keyword.keyword}" would actually want to buy
+- Mention at least 2 of the products listed above BY EXACT NAME in your article sections
+`;
+    }
+
     // 8. Full SEO-optimized prompt matching V1 quality with DYNAMIC category content
     const prompt = `You are an expert SEO content writer for ${context.categoryName}. Generate an SEO article about "${keyword.keyword}" optimized for Google Featured Snippets.
 ${serpInsights}
 ${paaQuestionsText}${amazonProductsPromptText}
+${productGroundingText}
 TARGET SITE: https://${context.domain}${context.basePath}
 EXPERT AUTHOR: ${expertAuthor.name}, ${expertAuthor.title} (${expertAuthor.credentials})
 
 Requirements:
 - 3000+ words comprehensive content
 - Use "${keyword.keyword}" naturally 8-12 times
-- Include 8+ detailed FAQs with 150+ word answers
+- Include 8+ detailed FAQs with 150+ word answers (MINIMUM 8, aim for 10)
+- FAQ questions MUST be about the PRODUCT/TOPIC itself, NOT about "reviews" or "guides". Strip action words from the keyword for FAQ questions. Example: for keyword "reviews of cat safe window screens", FAQs should ask about "cat safe window screens" (e.g., "Are cat safe window screens durable?" NOT "Are reviews of cat safe window screens worth it?")
 - Include expert quotes and real pricing/data
 - Write in authoritative, trustworthy tone
 - Include 3-5 external authority links to veterinary sites, manufacturer sites, research journals
 - DO NOT include comparison tables or product tables in the article sections — a real product comparison is injected separately
+- MUST mention at least 2 of the real Amazon products listed above by name in the article body
 
 COPYWRITING PRINCIPLES (MANDATORY):
 - Clarity over cleverness: if you must choose between clear and creative, choose clear
@@ -8117,7 +8434,7 @@ STRICT SEO REQUIREMENTS FOR 100/100 SCORE (CRITICAL):
 
 **KEYWORD DENSITY: 1.0-1.5%** (For 3000 words = use keyword 30-45 times evenly)
 
-**HEADINGS: 4-8 unique H2s** - No duplicate text, keyword in 2+ H2s
+**HEADINGS: 4-8 unique H2s** - No duplicate text, use keyword naturally in 1-2 H2s ONLY. DO NOT repeat the full keyword phrase in every H2 — that is keyword stuffing. Use natural short variations like "How It Works", "Top Picks Compared", "Pricing Guide", "Key Benefits". Only include the full keyword in the H1 title.
 
 **LINKS: 8-12 internal links (REQUIRED in internalLinks array) + 2-3 external authority links**
 
@@ -8176,10 +8493,10 @@ Return ONLY valid JSON:
   ],
   "introduction": "400+ words introducing ${context.categoryName} and this topic",
   "sections": [
-    {"heading": "UNIQUE H2 about how ${keyword.keyword} works", "content": "500+ words"},
-    {"heading": "DIFFERENT H2 about comparing options", "content": "500+ words"},
-    {"heading": "DISTINCT H2 about costs and value", "content": "500+ words"},
-    {"heading": "SEPARATE H2 about benefits and features", "content": "500+ words"}
+    {"heading": "Natural H2 - explain how it works (DO NOT repeat full keyword - use short natural phrasing like 'How It Works' or 'How These [Product] Work')", "content": "500+ words"},
+    {"heading": "Natural H2 - compare top options (e.g., 'Comparing the Top Options' or 'Side-by-Side Comparison')", "content": "500+ words"},
+    {"heading": "Natural H2 - discuss pricing/value (e.g., 'Pricing and Value' or 'What You'll Pay')", "content": "500+ words"},
+    {"heading": "Natural H2 - cover key benefits (e.g., 'Key Benefits and Features' or 'Why Cat Owners Love These')", "content": "500+ words"}
   ],
   "faqs": [
     ${categoryFaqExamples}
@@ -8205,46 +8522,330 @@ PROGRAMMATIC SEO QUALITY GATES (MANDATORY):
 - Quality over quantity: every section must add genuine value, not just fill space`;
 
     // 7. Generate with Cloudflare AI (FREE - keeps Copilot for discovery/keywords only)
+    currentStep = '5/7: AI Generation';
     updateSessionStage(keyword.keyword, '5/7: AI Generation');
     console.log(`[SEO-V3] [Step 4/7] Building prompt (${prompt.length} chars)...`);
     console.log(`[SEO-V3] [Step 5/7] Calling Cloudflare AI for "${keyword.keyword}"...`);
     // FIX: Increased timeout from 2min to 5min, fixed response type check
-    const aiResult = await generateWithCloudflareAI(prompt, { timeout: 300000 });
-    if (!aiResult || !aiResult.content) {
-      throw new Error(`Cloudflare AI failed: No content returned`);
+    let response = '';
+    const maxAiAttempts = 2;
+    for (let aiAttempt = 1; aiAttempt <= maxAiAttempts; aiAttempt++) {
+      const attemptPrompt = aiAttempt === 1 ? prompt : `IMPORTANT: You MUST respond with ONLY a valid JSON object starting with { and ending with }. No explanations, no markdown, no text before or after the JSON. Just the raw JSON object.\n\n${prompt}`;
+      const aiResult = await generateWithCloudflareAI(attemptPrompt, { timeout: 300000 });
+      if (!aiResult || !aiResult.content) {
+        if (aiAttempt === maxAiAttempts) throw new Error(`Cloudflare AI failed: No content returned`);
+        console.log(`[SEO-V3] ⚠️ AI attempt ${aiAttempt}/${maxAiAttempts} returned empty, retrying...`);
+        continue;
+      }
+      response = aiResult.content;
+      if (!response.includes('{')) {
+        if (aiAttempt === maxAiAttempts) break;
+        console.log(`[SEO-V3] ⚠️ AI attempt ${aiAttempt}/${maxAiAttempts} returned no JSON (${response.length} chars text), retrying with JSON-forcing prompt...`);
+        continue;
+      }
+      break;
     }
-    const response = aiResult.content;
     console.log(`[SEO-V3] [Step 5/7] ✓ Cloudflare AI response received (${response.length} chars)`);
 
-    // 8. Parse JSON response
-    const jsonMatch = response.match(/\{[\s\S]*"title"[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('No article JSON in response');
-    }
-    const sanitizedJson = jsonMatch[0]
-      .replace(/[\x00-\x1F\x7F]/g, (char) => {
-        if (char === '\n') return '\\n';
-        if (char === '\r') return '\\r';
-        if (char === '\t') return '\\t';
-        return '';
-      });
+    // 8. Parse JSON response — robust extraction for Llama/Cloudflare AI models
+    currentStep = '5b/7: JSON Parsing';
     let article: ArticleData;
-    try {
-      article = JSON.parse(sanitizedJson) as ArticleData;
-    } catch (jsonErr: any) {
-      const cleaned = sanitizedJson
-        .replace(/\\r/g, '')
-        .replace(/\\t/g, ' ')
-        .replace(/,\s*}/g, '}')
-        .replace(/,\s*]/g, ']');
-      article = JSON.parse(cleaned) as ArticleData;
+    {
+      let raw = response;
+
+      // Strip markdown code fences: ```json ... ``` or ``` ... ```
+      const fenceMatch = raw.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+      if (fenceMatch) {
+        raw = fenceMatch[1].trim();
+      }
+
+      // Strategy: Escape raw newlines inside JSON string values properly
+      // LLMs often output JSON with literal newlines inside strings
+      // We need to escape them before parsing
+      function escapeNewlinesInJsonStrings(input: string): string {
+        let result = '';
+        let inStr = false;
+        let esc = false;
+        for (let i = 0; i < input.length; i++) {
+          const ch = input[i];
+          if (esc) {
+            result += ch;
+            esc = false;
+            continue;
+          }
+          if (ch === '\\' && inStr) {
+            result += ch;
+            esc = true;
+            continue;
+          }
+          if (ch === '"') {
+            inStr = !inStr;
+            result += ch;
+            continue;
+          }
+          if (inStr) {
+            if (ch === '\n') { result += '\\n'; continue; }
+            if (ch === '\r') { result += '\\r'; continue; }
+            if (ch === '\t') { result += '\\t'; continue; }
+            // Remove other control chars inside strings
+            if (ch.charCodeAt(0) < 0x20) { continue; }
+          }
+          result += ch;
+        }
+        return result;
+      }
+
+      function repairBrokenJson(input: string): string {
+        // Strategy: walk character by character, track string boundaries properly,
+        // and escape any unescaped quotes found inside string values
+        let result = '';
+        let i = 0;
+        while (i < input.length) {
+          const ch = input[i];
+          if (ch === '"') {
+            result += '"';
+            i++;
+            while (i < input.length) {
+              const sc = input[i];
+              if (sc === '\\') {
+                result += sc;
+                i++;
+                if (i < input.length) {
+                  result += input[i];
+                  i++;
+                }
+                continue;
+              }
+              if (sc === '"') {
+                const after = input.substring(i + 1).trimStart();
+                if (after.length === 0 || /^[,\]\}:]/.test(after)) {
+                  result += '"';
+                  i++;
+                  break;
+                } else {
+                  result += '\\"';
+                  i++;
+                  continue;
+                }
+              }
+              if (sc === '\n') { result += '\\n'; i++; continue; }
+              if (sc === '\r') { result += '\\r'; i++; continue; }
+              if (sc === '\t') { result += '\\t'; i++; continue; }
+              result += sc;
+              i++;
+            }
+          } else {
+            result += ch;
+            i++;
+          }
+        }
+        result = result.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
+        return result;
+      }
+
+      function fixMissingBraces(input: string): string {
+        let chars: string[] = [];
+        let inStr = false, esc = false;
+        let stack: string[] = [];
+        for (let i = 0; i < input.length; i++) {
+          const c = input[i];
+          if (esc) { esc = false; chars.push(c); continue; }
+          if (c === '\\' && inStr) { esc = true; chars.push(c); continue; }
+          if (c === '"') { inStr = !inStr; chars.push(c); continue; }
+          if (inStr) { chars.push(c); continue; }
+          if (c === '{') { stack.push('{'); chars.push(c); continue; }
+          if (c === '[') { stack.push('['); chars.push(c); continue; }
+          if (c === ']') {
+            let inserted = 0;
+            while (stack.length > 0 && stack[stack.length - 1] === '{') {
+              chars.push('}');
+              stack.pop();
+              inserted++;
+            }
+            if (inserted > 0) {
+              console.log(`[SEO-V3] fixMissingBraces: inserted ${inserted} missing '}' before ']' at position ${i}`);
+            }
+            if (stack.length > 0 && stack[stack.length - 1] === '[') stack.pop();
+            chars.push(c);
+            continue;
+          }
+          if (c === '}') {
+            if (stack.length > 0 && stack[stack.length - 1] === '{') stack.pop();
+            chars.push(c);
+            continue;
+          }
+          chars.push(c);
+        }
+        return chars.join('');
+      }
+
+      // Find the first { that starts the JSON
+      const firstBrace = raw.indexOf('{');
+      if (firstBrace === -1) {
+        throw new Error('No article JSON in response — no opening brace found');
+      }
+      // Find the last } that ends the JSON
+      const lastBrace = raw.lastIndexOf('}');
+      if (lastBrace === -1 || lastBrace <= firstBrace) {
+        throw new Error('No article JSON in response — no closing brace found');
+      }
+
+      let jsonStr = raw.substring(firstBrace, lastBrace + 1);
+
+      // Verify it contains "title"
+      if (!jsonStr.includes('"title"')) {
+        throw new Error('No article JSON in response — missing "title" field');
+      }
+
+      // Escape newlines inside string values
+      const sanitizedJson = escapeNewlinesInJsonStrings(jsonStr);
+
+      // Attempt 1: Direct parse
+      try {
+        article = JSON.parse(sanitizedJson) as ArticleData;
+      } catch (jsonErr: any) {
+        console.error(`[SEO-V3] First JSON.parse failed: ${(jsonErr as Error).message}`);
+        console.error(`[SEO-V3] jsonStr length: ${jsonStr.length}, sanitizedJson length: ${sanitizedJson.length}`);
+        console.error(`[SEO-V3] First 300 chars:`, sanitizedJson.substring(0, 300));
+        console.error(`[SEO-V3] Last 300 chars:`, sanitizedJson.substring(sanitizedJson.length - 300));
+
+        let cleaned = sanitizedJson
+          .replace(/,\s*}/g, '}')
+          .replace(/,\s*]/g, ']');
+
+        try {
+          article = JSON.parse(cleaned) as ArticleData;
+        } catch (cleanErr: any) {
+          const posMatch = (cleanErr as Error).message.match(/position (\d+)/);
+          if (posMatch) {
+            const errPos = parseInt(posMatch[1]);
+            console.error(`[SEO-V3] JSON error at position ${errPos}, attempting targeted repair...`);
+            console.error(`[SEO-V3] Context around error: ...${cleaned.substring(Math.max(0, errPos - 80), errPos)}<<<HERE>>>${cleaned.substring(errPos, errPos + 80)}...`);
+            
+            let repaired = repairBrokenJson(cleaned);
+            repaired = fixMissingBraces(repaired);
+            // Fix missing commas between objects/arrays: }{ -> },{ and ][ -> ],[  and }" -> },"  and ]" -> ],"
+            repaired = repaired.replace(/\}\s*\{/g, '},{');
+            repaired = repaired.replace(/\]\s*\[/g, '],[');
+            repaired = repaired.replace(/\}\s*"/g, (match, offset) => {
+              // Only add comma if not at the end of the JSON (before a key, not a value end)
+              const after = repaired.substring(offset + match.length, offset + match.length + 20);
+              if (after.match(/^\s*[a-zA-Z]/)) return '},"';
+              return match;
+            });
+            // Fix missing commas after string values before next key: "value"\n  "nextKey" -> "value",\n  "nextKey"
+            repaired = repaired.replace(/(")\s*\n(\s*"[a-zA-Z])/g, '$1,\n$2');
+            console.log(`[SEO-V3] Repair chain: repairBrokenJson + fixMissingBraces + fixMissingCommas applied`);
+            try {
+              article = JSON.parse(repaired) as ArticleData;
+              console.log(`[SEO-V3] ✅ JSON repaired successfully via targeted fix`);
+            } catch (repairErr: any) {
+              // Attempt 4: Truncate at the last valid structure before the error
+              const beforeError = cleaned.substring(0, errPos);
+              const lastGoodComma = Math.max(
+                beforeError.lastIndexOf('",'),
+                beforeError.lastIndexOf('"],'),
+                beforeError.lastIndexOf('},')
+              );
+              if (lastGoodComma > errPos * 0.5) {
+                let truncated = cleaned.substring(0, lastGoodComma + 1);
+                // Count and close unclosed structures
+                let ob = 0, obk = 0, ins = false, esc = false;
+                for (let i = 0; i < truncated.length; i++) {
+                  const c = truncated[i];
+                  if (esc) { esc = false; continue; }
+                  if (c === '\\' && ins) { esc = true; continue; }
+                  if (c === '"') { ins = !ins; continue; }
+                  if (!ins) {
+                    if (c === '{') ob++; if (c === '}') ob--;
+                    if (c === '[') obk++; if (c === ']') obk--;
+                  }
+                }
+                if (ins) truncated += '"';
+                truncated = truncated.replace(/,\s*$/, '');
+                for (let b = 0; b < obk; b++) truncated += ']';
+                for (let b = 0; b < ob; b++) truncated += '}';
+                try {
+                  article = JSON.parse(truncated) as ArticleData;
+                  console.log(`[SEO-V3] ✅ Recovered by truncating at position ${lastGoodComma}`);
+                } catch (truncErr: any) {
+                  // Fall through to attempt 5
+                }
+              }
+            }
+          }
+
+          if (!article) {
+            // Attempt 5: Fix truncated JSON by closing unclosed structures
+            let openBraces = 0, openBrackets = 0;
+            let inString = false, escaped = false;
+            for (let i = 0; i < cleaned.length; i++) {
+              const c = cleaned[i];
+              if (escaped) { escaped = false; continue; }
+              if (c === '\\' && inString) { escaped = true; continue; }
+              if (c === '"') { inString = !inString; continue; }
+              if (!inString) {
+                if (c === '{') openBraces++;
+                if (c === '}') openBraces--;
+                if (c === '[') openBrackets++;
+                if (c === ']') openBrackets--;
+              }
+            }
+
+            if (openBraces > 0 || openBrackets > 0 || inString) {
+              console.error(`[SEO-V3] Detected truncated JSON: ${openBraces} unclosed braces, ${openBrackets} unclosed brackets, inString: ${inString}`);
+              let lastResort = cleaned;
+              if (inString) lastResort += '"';
+              lastResort = lastResort.replace(/,\s*$/, '');
+              for (let b = 0; b < openBrackets; b++) lastResort += ']';
+              for (let b = 0; b < openBraces; b++) lastResort += '}';
+
+              try {
+                article = JSON.parse(lastResort) as ArticleData;
+                console.log(`[SEO-V3] ✅ Recovered truncated JSON successfully`);
+              } catch (finalErr: any) {
+                console.error(`[SEO-V3] JSON recovery also failed: ${(finalErr as Error).message}`);
+                throw new Error(`JSON parse failed after cleanup: ${(finalErr as Error).message}`);
+              }
+            } else {
+              throw new Error(`JSON parse failed after cleanup: ${(cleanErr as Error).message}`);
+            }
+          }
+        }
+      }
     }
 
+    currentStep = '5c/7: Grammar & Normalization';
     article = await grammarCheckArticle(article);  // Harper runs first on plain text
     article = normalizeArticleContent(article);     // Then wrap in <p> tags
 
     if (!article.title) {
       throw new Error('Invalid article JSON - missing title');
+    }
+
+    // 8b. Product grounding validation — ensure article discusses real products, not hallucinated ones
+    if (productNamesList.length > 0) {
+      const articleText = [
+        article.title || '',
+        article.metaDescription || '',
+        ...(article.sections || []).map((s: any) => `${s.heading || ''} ${s.content || ''}`),
+        ...(article.faqs || []).map((f: any) => `${f.question || ''} ${f.answer || ''}`)
+      ].join(' ').toLowerCase();
+
+      const mentionedProducts = productNamesList.filter(name => {
+        const words = name.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+        const significantWords = words.slice(0, 3);
+        return significantWords.some(word => articleText.includes(word));
+      });
+
+      if (mentionedProducts.length === 0) {
+        console.warn(`[SEO-V3] ⚠️ PRODUCT HALLUCINATION DETECTED: Article body mentions NONE of the ${productNamesList.length} real Amazon products`);
+        console.warn(`[SEO-V3] ⚠️ Expected products: ${productNamesList.map(n => `"${n}"`).join(', ')}`);
+        console.warn(`[SEO-V3] ⚠️ Article may be recommending wrong product category — comparison table will still use real products`);
+        addActivityLog('warning', `[V3] Product grounding issue: article doesn't mention real Amazon products by name`, { keyword: keyword.keyword, expectedProducts: productNamesList });
+      } else {
+        console.log(`[SEO-V3] ✓ Product grounding: ${mentionedProducts.length}/${productNamesList.length} real products mentioned in article body`);
+      }
     }
 
     // 9. Enforce SEO limits - truncate title and meta description
@@ -8325,6 +8926,7 @@ PROGRAMMATIC SEO QUALITY GATES (MANDATORY):
     }
 
     // 11. Build full HTML with schema markup (use V3-specific template)
+    currentStep = '5d/7: HTML Build';
     const html = buildArticleHtml(article, slug, keyword.keyword, context, video, generatedImages, amazonProducts);
 
     // 12. Calculate SEO score
@@ -8348,6 +8950,7 @@ PROGRAMMATIC SEO QUALITY GATES (MANDATORY):
     }
 
     // 13. Deploy to KV with V3 prefix (only if SEO score passes threshold)
+    currentStep = '6/7: Deploying to KV';
     updateSessionStage(keyword.keyword, '6/7: Deploying to KV');
     console.log(`[SEO-V3] [Step 6/7] Deploying to Cloudflare KV...`);
     const derivedSlugForKv = context?.categorySlug || 'v3-articles';
@@ -8435,6 +9038,7 @@ PROGRAMMATIC SEO QUALITY GATES (MANDATORY):
     }
 
     // 14. Update V3 sitemap
+    currentStep = '7/7: Updating Sitemap';
     updateSessionStage(keyword.keyword, '7/7: Updating Sitemap');
     console.log(`[SEO-V3] [Step 7/7] Updating sitemap...`);
     await updateSitemap(slug, context);
@@ -8470,9 +9074,24 @@ PROGRAMMATIC SEO QUALITY GATES (MANDATORY):
 
     return true;
   } catch (error: any) {
-    console.error(`[SEO-V3] ❌ FAILED: "${keyword.keyword}" - ${error.message}`);
+    console.error(`[SEO-V3] ❌ FAILED at [${currentStep}]: "${keyword.keyword}" - ${error.message}`);
     console.error(`[SEO-V3] Stack:`, error.stack?.split('\n').slice(0, 5).join('\n'));
-    addActivityLog('error', `[V3] Generation failed: ${keyword.keyword}`, { error: error.message });
+    addActivityLog('error', `[V3] Generation failed: ${keyword.keyword}`, { error: error.message, step: currentStep });
+
+    // Persist failure to file so it survives activity log rotation
+    try {
+      const fs = await import('fs');
+      const failureEntry = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        keyword: keyword.keyword,
+        slug: keyword.slug,
+        step: currentStep,
+        error: error.message,
+        stack: error.stack?.split('\n').slice(0, 3).join(' | ')
+      }) + '\n';
+      fs.appendFileSync('/tmp/v3-failures.log', failureEntry);
+    } catch (_) { /* ignore logging errors */ }
+
     return false;
   }
 }
@@ -8892,7 +9511,16 @@ async function runV3AutonomousGeneration() {
     nextKeyword.status = 'published';
   } else {
     recordSessionError(`Failed: "${nextKeyword.keyword}"`);
-    nextKeyword.status = 'published'; // Still mark as attempted to avoid retry loops
+    const prevFailures = (nextKeyword as any)._failures || 0;
+    (nextKeyword as any)._failures = prevFailures + 1;
+    if (prevFailures >= 1) {
+      nextKeyword.status = 'published';
+      console.log(`[SEO-V3] ⚠️ "${nextKeyword.keyword}" failed ${prevFailures + 1} times, skipping permanently`);
+    } else {
+      nextKeyword.status = 'pending';
+      nextKeyword.priority = 'low';
+      console.log(`[SEO-V3] ♻️ "${nextKeyword.keyword}" failed, will retry later (attempt ${prevFailures + 1}/2)`);
+    }
   }
   
   // Save progress to KV after each article (using 'in_progress' status to distinguish from complete)
