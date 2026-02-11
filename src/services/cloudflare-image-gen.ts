@@ -24,103 +24,8 @@ let dailyResetDate = new Date().toDateString();
 // Topic detection → Literal scene description → Photorealistic output
 // =============================================================================
 
-// Vision verification - max retries before accepting any image
-const MAX_IMAGE_RETRIES = 3;
-
-/**
- * Verify image relevance using OpenAI Vision API
- * STRICT verification: Image must clearly relate to the keyword topic
- */
-async function verifyImageRelevance(
-  imageBase64: string,
-  keyword: string,
-  log: (level: string, msg: string, data?: any) => void
-): Promise<{ relevant: boolean; reason: string }> {
-  // Check multiple possible env var names for OpenAI key
-  const openaiKey = process.env.AI_INTEGRATIONS_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
-
-  if (!openaiKey) {
-    log('warning', '[Vision] No OpenAI key - skipping verification', {});
-    return { relevant: true, reason: 'No API key for verification' };
-  }
-
-  // Extract core topic from keyword for verification
-  const coreTopic = keyword.toLowerCase()
-    .replace(/\b(best|top|review|guide|how to|what is|2024|2025|2026)\b/gi, '')
-    .trim();
-
-  try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${openaiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: `You are a strict image validator for a cat care website. Check if this image is appropriate for an article about: "${keyword}"
-
-REJECT the image if ANY of these are true:
-- Cat is wearing clothes, costumes, hats, glasses, or accessories
-- Cat is in a silly/absurd scenario (driving, cooking, at desk, etc.)
-- Image contains ANY text, words, letters, or watermarks
-- Image is a cartoon, illustration, or AI art that looks fake
-- Image has NOTHING to do with "${coreTopic}"
-
-ACCEPT only if:
-- Shows a real, natural-looking cat
-- Visually relates to the topic "${coreTopic}"
-- No text anywhere in the image
-- Would look professional on a pet care website
-
-Respond JSON only:
-{"pass": true/false, "reason": "10 words max why"}
-
-Be VERY strict. When in doubt, reject.`
-              },
-              {
-                type: 'image_url',
-                image_url: {
-                  url: `data:image/png;base64,${imageBase64}`,
-                  detail: 'low'
-                }
-              }
-            ]
-          }
-        ],
-        max_tokens: 100
-      })
-    });
-
-    if (!response.ok) {
-      log('warning', `[Vision] API error: ${response.status}`, {});
-      return { relevant: true, reason: 'API error, accepting image' };
-    }
-
-    const data = await response.json() as any;
-    const content = data.choices?.[0]?.message?.content || '';
-
-    // Parse JSON response
-    const jsonMatch = content.match(/\{[\s\S]*?\}/);
-    if (jsonMatch) {
-      const result = JSON.parse(jsonMatch[0]);
-      const passed = result.pass === true;
-      log('info', `[Vision] ${passed ? '✅ PASS' : '❌ FAIL'}: ${result.reason}`, { keyword });
-      return { relevant: passed, reason: result.reason };
-    }
-
-    return { relevant: true, reason: 'Could not parse response' };
-  } catch (error: any) {
-    log('warning', `[Vision] Error: ${error.message}`, {});
-    return { relevant: true, reason: 'Error during verification' };
-  }
-}
+// Max generation attempts per image (retry on generation failure only)
+const MAX_IMAGE_RETRIES = 2;
 
 // Interfaces
 export interface ArticleSection {
@@ -471,15 +376,19 @@ function generateAltText(
   sectionContext: SectionImageContext,
   keyword: string
 ): string {
-  const categoryName = category.replace(/-/g, ' ');
+  const cleanKeyword = keyword.replace(/-/g, ' ');
+  const headingClean = sectionContext.headingClean || '';
 
   switch (sectionContext.imageType) {
     case 'hero':
-      return `${keyword} - ${categoryName} guide hero image`;
+      return `Cat owner reviewing ${cleanKeyword} options for their pet in 2026`;
     case 'closing':
-      return `${keyword} summary infographic`;
+      return `Complete guide summary for choosing the best ${cleanKeyword}`;
     default:
-      return `${sectionContext.headingClean} - ${categoryName}`;
+      if (headingClean && headingClean.length > 10) {
+        return `${headingClean} - expert ${cleanKeyword} guide`;
+      }
+      return `Detailed look at ${cleanKeyword} features and benefits for cats`;
   }
 }
 
@@ -589,11 +498,9 @@ export async function generateArticleImages(
     let imageBuffer: ArrayBuffer | null = null;
     let prompt = '';
     let attempt = 0;
-    let verificationPassed = false;
-    let lastBase64 = '';
 
-    // Retry loop with verification
-    while (attempt < MAX_IMAGE_RETRIES && !verificationPassed) {
+    // Retry loop (retry on generation failure only)
+    while (attempt < MAX_IMAGE_RETRIES && !imageBuffer) {
       attempt++;
 
       // Check quota before each attempt
@@ -602,55 +509,19 @@ export async function generateArticleImages(
         break;
       }
 
-      // Generate prompt (same for all attempts - it's keyword-literal now)
       prompt = generateImagePrompt(category, context, keyword);
 
       if (attempt === 1) {
-        log('info', `[V3] Generating ${context.imageType} image for "${keyword}"...`, {
-          prompt: prompt.substring(0, 120) + '...'
-        });
+        log('info', `[V3] Generating ${context.imageType} image for "${keyword}"...`, {});
       } else {
         log('info', `[V3] Retry ${attempt}/${MAX_IMAGE_RETRIES} for "${keyword}"...`, {});
       }
 
-      // Generate image
       imageBuffer = await generateSingleImage(prompt, 1024, 768);
 
       if (!imageBuffer) {
         log('warning', `[V3] Generation failed on attempt ${attempt}`, {});
-        continue;
       }
-
-      // Convert to base64 for verification
-      const bytes = new Uint8Array(imageBuffer);
-      let binary = '';
-      for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      lastBase64 = Buffer.from(binary, 'binary').toString('base64');
-
-      // Verify with vision API
-      const verification = await verifyImageRelevance(lastBase64, keyword, log);
-      
-      if (verification.relevant) {
-        verificationPassed = true;
-        log('success', `[V3] Image verified for "${keyword}": ${verification.reason}`, {});
-      } else {
-        log('warning', `[V3] Image rejected: ${verification.reason}`, { attempt });
-        imageBuffer = null; // Clear so we retry
-      }
-    }
-
-    // If all retries failed, accept the last image anyway
-    if (!verificationPassed && lastBase64) {
-      log('warning', `[V3] Max retries reached, using last generated image`, {});
-      // Reconstruct buffer from base64
-      const binaryString = atob(lastBase64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      imageBuffer = bytes.buffer;
     }
 
     if (!imageBuffer) {
@@ -689,15 +560,11 @@ export async function generateArticleImages(
       };
 
       result.images.push(generatedImage);
-      recordImageGeneration(attempt); // Count all attempts
-
-      // FLUX.1 schnell: ~57.6 neurons per 1024x768 image × attempts
+      recordImageGeneration(attempt);
       result.neuronsCost += 58 * attempt;
 
-      log('success', `[V3] ${context.imageType} image stored: ${r2Key} (${attempt} attempt${attempt > 1 ? 's' : ''})`, {
-        r2Key,
-        neuronsCost: 58 * attempt,
-        attempts: attempt
+      log('info', `[V3] ${context.imageType} image stored: ${r2Key} (${attempt} attempt${attempt > 1 ? 's' : ''})`, {
+        r2Key
       });
     } else {
       result.errors.push(`Failed to store ${context.imageType} image to R2`);
